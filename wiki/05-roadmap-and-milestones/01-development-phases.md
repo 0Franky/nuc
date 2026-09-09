@@ -43,13 +43,17 @@
 | **Flusso 8** | **Trasferimento File Chunked 64KB** | ✅ **Operativo** | Segmentazione e invio su canale ad alta velocità. |
 | **Flusso 8** | **Integrità Crittografica SHA-256 / BLAKE3** | ✅ **Operativo** | Hash cumulativo e validazione prima del salvataggio su disco. |
 | **Flusso 8** | **Resume Trasferimenti Interrotti** | ✅ **Operativo** | Tracciamento chunk e recupero mirato su disconnessione Wi-Fi. |
+| **Flusso 9** | **Telephony & Call Continuity (Notifica Chiamate & Risposta Remota)** | 🟡 **In Sviluppo (Roadmap / TODO)** | **Fase 1**: Broadcast notifica chiamata da Android a tutti i PC (`NOTIFICATION_SYNC`).<br>**Fase 2 (TODO)**: Risposta remota dal PC con instradamento microfoni locali via Opus/UDP al cellulare e reinserimento audio nella chiamata telefonica. |
 | **Extra** | **Centro Notifiche Multi-Dispositivo** | ✅ **Operativo** | Notifiche sanitizzate bidirezionali, filtro mittente e sblocco segreti. |
 | **Extra** | **Continuity Camera (Webcam HD Wireless per PC)** | ⏳ *Pianificato* | Streaming video H.264 dal telefono a driver virtuale webcam Windows. |
 
 ---
 
-## 🎯 Prossimi Obiettivi di Sviluppo (Sprint Corrente)
+## 🎯 Prossimi Obiettivi di Sviluppo (Sprint Corrente & Roadmap)
 
-1. **Player Audio Nativo In-App Flutter**: Integrazione diretta di `just_audio` o streaming AAudio in-app per evitare l'apertura del browser esterno.
-2. **Supporto Immagini negli Appunti**: Estendere `nexus-plugin-clipboard` per catturare screenshot e immagini PNG/JPEG.
-3. **Resume Automatico File Transfer**: Implementare la ripresa dei trasferimenti file da disco (.part) su riallineamento socket.
+1. **Telephony & Call Continuity (Chiamate da Cellulare a PC)**:
+   - **Fase 1**: Intercettazione notifiche di chiamata in arrivo su Android via `NotificationListenerService` / `TelephonyCallback` e broadcast a tutti i dispositivi connessi.
+   - **Fase 2 (TODO)**: Risposta alla chiamata telefonica direttamente dal dispositivo in uso (PC Windows, Linux, Tablet), catturando l'audio dal microfono del computer e instradando lo stream via Opus/UDP verso il cellulare che lo reinietta nella chiamata telefonica attiva.
+2. **Player Audio Nativo In-App Flutter**: Integrazione diretta di `just_audio` o streaming AAudio in-app per evitare l'apertura del browser esterno.
+3. **Supporto Immagini negli Appunti**: Estendere `nexus-plugin-clipboard` per catturare screenshot e immagini PNG/JPEG.
+4. **Resume Automatico File Transfer**: Implementare la ripresa dei trasferimenti file da disco (.part) su riallineamento socket.

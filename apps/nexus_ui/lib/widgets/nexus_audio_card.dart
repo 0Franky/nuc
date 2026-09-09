@@ -167,8 +167,9 @@ class _NexusAudioCardState extends State<NexusAudioCard> {
                     _isMuted = !_isMuted;
                     LanSyncService.instance.isAudioMuted = _isMuted;
                   });
-                  final newVol = _isMuted ? 0.0 : _volume;
-                  NexusFfiBridge.instance.setAudioVolume(newVol);
+                  final targetId = targetPeer?['id'] as String?;
+                  LanSyncService.instance.sendAudioMute(_isMuted, targetPeerId: targetId);
+                  NexusFfiBridge.instance.toggleAudioMute();
                 },
               ),
               Expanded(
@@ -185,6 +186,8 @@ class _NexusAudioCardState extends State<NexusAudioCard> {
                       }
                       LanSyncService.instance.currentVolume = v;
                     });
+                    final targetId = targetPeer?['id'] as String?;
+                    LanSyncService.instance.sendVolume(v, targetPeerId: targetId);
                     NexusFfiBridge.instance.setAudioVolume(v);
                   },
                 ),
@@ -218,7 +221,8 @@ class _NexusAudioCardState extends State<NexusAudioCard> {
                 icon: Icons.speaker_notes_off_rounded,
                 style: NexusButtonStyle.ghost,
                 onPressed: () {
-                  NexusFfiBridge.instance.togglePcSpeakersMute();
+                  final targetId = targetPeer?['id'] as String?;
+                  LanSyncService.instance.togglePcSpeakersMute(targetPeerId: targetId);
                   ScaffoldMessenger.of(context).hideCurrentSnackBar();
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(

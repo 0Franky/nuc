@@ -124,5 +124,49 @@ void main() {
       expect(selectedId, 'pc-2');
       expect(service.selectedTargetDeviceId, 'pc-2');
     });
+
+    test('5. Dynamic peer metadata update and self-device filter', () {
+      final service = LanSyncService.instance;
+      service.deviceId = 'my-self-uuid-1234';
+      service.discoveredPeers.clear();
+
+      // Register initial peer
+      service.registerOrUpdatePeer(
+        id: 'peer-linux-5678',
+        name: 'Dispositivo (192.168.1.10)',
+        ip: '192.168.1.10',
+        deviceType: 'Desktop',
+        os: 'Linux',
+      );
+
+      expect(service.discoveredPeers.length, 1);
+      expect(service.discoveredPeers.first['name'], 'Dispositivo (192.168.1.10)');
+
+      // Receive PEER_METADATA with real user-configured name
+      service.registerOrUpdatePeer(
+        id: 'peer-linux-5678',
+        name: 'Workstation Ubuntu',
+        ip: '192.168.1.10',
+        deviceType: 'Desktop',
+        os: 'Linux',
+      );
+
+      // Name should be updated dynamically without creating duplicate peer entries
+      expect(service.discoveredPeers.length, 1);
+      expect(service.discoveredPeers.first['name'], 'Workstation Ubuntu');
+
+      // Attempt to register self: MUST BE IGNORED
+      service.registerOrUpdatePeer(
+        id: 'my-self-uuid-1234',
+        name: 'Self PC Windows',
+        ip: '127.0.0.1',
+        deviceType: 'Desktop',
+        os: 'Windows',
+      );
+
+      // Still only 1 remote peer, self is never added
+      expect(service.discoveredPeers.length, 1);
+      expect(service.discoveredPeers.any((p) => p['id'] == 'my-self-uuid-1234'), false);
+    });
   });
 }

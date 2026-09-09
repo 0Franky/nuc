@@ -24,40 +24,44 @@ class TargetDeviceSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final lan = LanSyncService.instance;
-    final allPeers = lan.discoveredPeers;
 
-    // Filter peers if needed (e.g. desktop only for touchpad remote)
-    var peers = allPeers.where((p) {
-      if (p['online'] == false) return false;
-      if (filterType != null && p['device_type'] != filterType) {
-        final os = (p['os'] as String?)?.toLowerCase() ?? '';
-        final isDesktopOs = os.contains('windows') || os.contains('mac') || os.contains('linux');
-        if (!isDesktopOs) return false;
-      }
-      return true;
-    }).toList();
+    return ListenableBuilder(
+      listenable: lan,
+      builder: (context, _) {
+        final allPeers = lan.discoveredPeers;
 
-    // Fallback peer if none yet discovered over LAN
-    if (peers.isEmpty) {
-      peers = [
-        {
-          "id": "00000000-0000-0000-0000-000000000001",
-          "name": lan.pcIp != null ? "PC Windows (${lan.pcIp})" : "PC Windows (Nexus Core)",
-          "device_type": "Desktop",
-          "os": "Windows",
-          "online": true,
+        // Filter peers if needed (e.g. desktop only for touchpad remote)
+        var peers = allPeers.where((p) {
+          if (p['online'] == false) return false;
+          if (filterType != null && p['device_type'] != filterType) {
+            final os = (p['os'] as String?)?.toLowerCase() ?? '';
+            final isDesktopOs = os.contains('windows') || os.contains('mac') || os.contains('linux');
+            if (!isDesktopOs) return false;
+          }
+          return true;
+        }).toList();
+
+        // Fallback peer if none yet discovered over LAN
+        if (peers.isEmpty) {
+          peers = [
+            {
+              "id": "00000000-0000-0000-0000-000000000001",
+              "name": lan.pcIp != null ? "PC Windows (${lan.pcIp})" : "PC Windows (Nexus Core)",
+              "device_type": "Desktop",
+              "os": "Windows",
+              "online": true,
+            }
+          ];
         }
-      ];
-    }
 
-    final currentTargetId = selectedDeviceId ?? lan.selectedTargetDeviceId ?? (peers.isNotEmpty ? peers.first['id'] as String : '');
+        final currentTargetId = selectedDeviceId ?? lan.selectedTargetDeviceId ?? (peers.isNotEmpty ? peers.first['id'] as String : '');
 
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: compact ? 6 : 8),
-      decoration: BoxDecoration(
-        color: NexusTheme.surfaceSecondary.withAlpha(160),
-        borderRadius: BorderRadius.circular(NexusTheme.radiusCard),
-        border: Border.all(color: NexusTheme.borderCard),
+        return Container(
+          padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: compact ? 6 : 8),
+          decoration: BoxDecoration(
+            color: NexusTheme.surfaceSecondary.withAlpha(160),
+            borderRadius: BorderRadius.circular(NexusTheme.radiusCard),
+            border: Border.all(color: NexusTheme.borderCard),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -198,5 +202,7 @@ class TargetDeviceSelector extends StatelessWidget {
         ],
       ),
     );
-  }
+  },
+);
+}
 }

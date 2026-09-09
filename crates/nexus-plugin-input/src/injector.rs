@@ -556,7 +556,36 @@ impl NativeInputInjector {
         Ok(())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    pub fn inject_media_key(action: &str) -> NexusResult<()> {
+        let playerctl_cmd = match action.to_uppercase().as_str() {
+            "PLAY" => "play",
+            "PAUSE" => "pause",
+            "PLAY_PAUSE" | "TOGGLE" => "play-pause",
+            "STOP" => "stop",
+            "NEXT" | "NEXT_TRACK" => "next",
+            "PREV" | "PREV_TRACK" => "previous",
+            _ => "play-pause",
+        };
+        let res = std::process::Command::new("playerctl")
+            .arg(playerctl_cmd)
+            .status();
+        if res.is_err() || !res.as_ref().unwrap().success() {
+            let xdotool_key = match action.to_uppercase().as_str() {
+                "PLAY" | "PAUSE" | "PLAY_PAUSE" | "TOGGLE" => "XF86AudioPlay",
+                "STOP" => "XF86AudioStop",
+                "NEXT" | "NEXT_TRACK" => "XF86AudioNext",
+                "PREV" | "PREV_TRACK" => "XF86AudioPrev",
+                _ => "XF86AudioPlay",
+            };
+            let _ = std::process::Command::new("xdotool")
+                .args(["key", xdotool_key])
+                .status();
+        }
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
     pub fn inject_media_key(_action: &str) -> NexusResult<()> {
         Ok(())
     }

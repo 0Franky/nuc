@@ -540,6 +540,7 @@ impl NexusActor for MediaPluginActor {
                                             }
 
                                             if msg_type == "PEER_METADATA"
+                                                || msg_type == "PEER_ANNOUNCE"
                                                 || msg_type == "SPATIAL_ARRANGEMENT"
                                                 || msg_type == "PROXIMITY_UPDATE"
                                             {
@@ -605,7 +606,7 @@ impl NexusActor for MediaPluginActor {
                                                 continue;
                                             }
 
-                                            if msg_type == "VOLUME_UPDATE" {
+                                            if msg_type == "VOLUME_UPDATE" || msg_type == "VOLUME_SET" {
                                                 let vol =
                                                     json_val["volume"].as_f64().unwrap_or(0.8) as f32;
                                                 bus_inner.publish(NexusEvent::AudioVolumeChanged(vol));
@@ -655,6 +656,25 @@ impl NexusActor for MediaPluginActor {
                                                         action, pos
                                                     ),
                                                 );
+
+                                                // Update internal session play state if applicable
+                                                let upper_action = action.to_uppercase();
+                                                {
+                                                    let mut current = actor.current_session.write().await;
+                                                    if let Some(session) = current.as_mut() {
+                                                        if upper_action == "PAUSE" {
+                                                            session.is_playing = false;
+                                                        } else if upper_action == "PLAY" {
+                                                            session.is_playing = true;
+                                                        } else if upper_action == "PLAY_PAUSE" || upper_action == "TOGGLE" {
+                                                            session.is_playing = !session.is_playing;
+                                                        }
+                                                        if let Some(p) = pos {
+                                                            session.position_ms = p;
+                                                        }
+                                                    }
+                                                }
+
                                                 let cmd = serde_json::json!({
                                                     "action": action,
                                                     "position_ms": pos,
@@ -666,7 +686,7 @@ impl NexusActor for MediaPluginActor {
                                                         client_tx.send(cmd_str.clone()).is_ok()
                                                     });
                                                 }
-                                                // Also inject Windows Media Key so system media players pause immediately
+                                                // Also inject Media Key so system media players react immediately
                                                 let _ = nexus_plugin_input::NativeInputInjector::inject_media_key(
                                                     action,
                                                 );

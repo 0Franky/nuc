@@ -32,7 +32,22 @@ pub fn set_windows_master_volume(volume: f32) {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub fn set_windows_master_volume(volume: f32) {
+    let clamped = volume.clamp(0.0, 1.0);
+    let pct = (clamped * 100.0).round() as u32;
+    let pactl_res = std::process::Command::new("pactl")
+        .args(["set-sink-volume", "@DEFAULT_SINK@", &format!("{}%", pct)])
+        .status();
+    if pactl_res.is_err() || !pactl_res.as_ref().unwrap().success() {
+        let _ = std::process::Command::new("amixer")
+            .args(["sset", "Master", &format!("{}%", pct)])
+            .status();
+    }
+    tracing::info!("🔊 Linux OS Master Volume adjusted to: {}%", pct);
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
 pub fn set_windows_master_volume(_volume: f32) {}
 
 #[cfg(target_os = "windows")]
@@ -71,5 +86,18 @@ pub fn toggle_pc_speakers_mute() {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub fn toggle_pc_speakers_mute() {
+    let pactl_res = std::process::Command::new("pactl")
+        .args(["set-sink-mute", "@DEFAULT_SINK@", "toggle"])
+        .status();
+    if pactl_res.is_err() || !pactl_res.as_ref().unwrap().success() {
+        let _ = std::process::Command::new("amixer")
+            .args(["sset", "Master", "toggle"])
+            .status();
+    }
+    tracing::info!("🔇 Linux PC speaker mute toggled");
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
 pub fn toggle_pc_speakers_mute() {}
