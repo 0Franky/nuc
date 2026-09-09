@@ -57,9 +57,11 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      // Tap on the 'In Alto' chip
+      // Scroll until 'In Alto' is visible, then tap
       final aboveTarget = find.textContaining('In Alto').first;
       expect(aboveTarget, findsOneWidget);
+      await tester.ensureVisible(aboveTarget);
+      await tester.pumpAndSettle();
 
       await tester.tap(aboveTarget);
       await tester.pumpAndSettle();

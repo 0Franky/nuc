@@ -6,6 +6,7 @@ import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
 import '../widgets/nexus_button.dart';
+import '../widgets/target_device_selector.dart';
 
 class ClipboardScreen extends StatefulWidget {
   const ClipboardScreen({super.key});
@@ -215,41 +216,54 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
           const SizedBox(width: 4),
         ],
       ),
-      body: _history.isEmpty
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: NexusTheme.accentIndigo.withAlpha(25),
-                        shape: BoxShape.circle,
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: TargetDeviceSelector(
+              compact: true,
+              title: "Invia Appunti a Dispositivo",
+              onDeviceSelected: (_) {
+                setState(() {});
+              },
+            ),
+          ),
+          Expanded(
+            child: _history.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24.0),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: NexusTheme.accentIndigo.withAlpha(25),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.content_paste_outlined, size: 48, color: NexusTheme.accentIndigo),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text('Nessun elemento negli appunti', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          const SizedBox(height: 6),
+                          const Text('Copia del testo su qualsiasi dispositivo per sincronizzarlo istantaneamente via E2EE.',
+                              textAlign: TextAlign.center, style: TextStyle(color: NexusTheme.textSecondary, fontSize: 12.5)),
+                          const SizedBox(height: 18),
+                          NexusButton(
+                            label: 'Sincronizza Testo E2EE',
+                            icon: Icons.add_rounded,
+                            style: NexusButtonStyle.primary,
+                            onPressed: () => _showAddClipDialog(context),
+                          ),
+                        ],
                       ),
-                      child: const Icon(Icons.content_paste_outlined, size: 48, color: NexusTheme.accentIndigo),
                     ),
-                    const SizedBox(height: 16),
-                    const Text('Nessun elemento negli appunti', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    const SizedBox(height: 6),
-                    const Text('Copia del testo su qualsiasi dispositivo per sincronizzarlo istantaneamente via E2EE.',
-                        textAlign: TextAlign.center, style: TextStyle(color: NexusTheme.textSecondary, fontSize: 12.5)),
-                    const SizedBox(height: 18),
-                    NexusButton(
-                      label: 'Sincronizza Testo E2EE',
-                      icon: Icons.add_rounded,
-                      style: NexusButtonStyle.primary,
-                      onPressed: () => _showAddClipDialog(context),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              itemCount: _history.length,
-              itemBuilder: (ctx, i) {
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    itemCount: _history.length,
+                    itemBuilder: (ctx, i) {
                 final item = _history[i];
                 final text = item['text']?.toString() ?? '';
                 final hint = item['hint_type']?.toString() ?? 'Testo';
@@ -384,6 +398,9 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
                 );
               },
             ),
+          ),
+        ],
+      ),
     );
   }
 }

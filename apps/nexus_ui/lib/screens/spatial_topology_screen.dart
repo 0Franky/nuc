@@ -7,6 +7,7 @@ import '../widgets/nexus_card.dart';
 import '../widgets/nexus_pill.dart';
 import '../widgets/nexus_button.dart';
 import '../widgets/spatial_grid_painter.dart';
+import '../widgets/target_device_selector.dart';
 
 class SpatialTopologyScreen extends StatefulWidget {
   const SpatialTopologyScreen({super.key});
@@ -127,6 +128,13 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
       body: ListView(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         children: [
+          // 0. Target Device Context Bar
+          const TargetDeviceSelector(
+            compact: true,
+            title: 'Dispositivo Target per Schermi & Input',
+          ),
+          const SizedBox(height: 10),
+
           // 1. macOS Displays Arrangement Aesthetic Canvas
           NexusCard(
             title: 'Disposizione Schermi Universal Control',
