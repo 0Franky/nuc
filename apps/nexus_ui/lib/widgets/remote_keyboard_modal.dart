@@ -29,7 +29,10 @@ class _RemoteKeyboardModalState extends State<RemoteKeyboardModal> {
   final textCtrl = TextEditingController();
 
   String get _targetPeerId =>
-      LanSyncService.instance.selectedTargetDeviceId ?? "00000000-0000-0000-0000-000000000001";
+      LanSyncService.instance.selectedTargetDeviceId ??
+      (LanSyncService.instance.discoveredPeers.isNotEmpty
+          ? LanSyncService.instance.discoveredPeers.first['id'] as String
+          : "");
 
   @override
   void dispose() {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'nexus_ffi_bridge.dart';
+import 'lan_sync_service.dart';
 
 class SystemTrayService with TrayListener, WindowListener {
   static final SystemTrayService instance = SystemTrayService._();
@@ -111,7 +112,11 @@ class SystemTrayService with TrayListener, WindowListener {
       case 'toggle_audio':
         _isAudioActive = !_isAudioActive;
         if (_isAudioActive) {
-          NexusFfiBridge.instance.startAudioRelay("00000000-0000-0000-0000-000000000001");
+          final target = LanSyncService.instance.selectedTargetDeviceId ??
+              (LanSyncService.instance.discoveredPeers.isNotEmpty
+                  ? LanSyncService.instance.discoveredPeers.first['id'] as String
+                  : "all");
+          NexusFfiBridge.instance.startAudioRelay(target);
         } else {
           NexusFfiBridge.instance.stopAudioRelay();
         }

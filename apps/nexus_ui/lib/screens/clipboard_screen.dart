@@ -31,17 +31,19 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
 
     _clipSub = LanSyncService.instance.onClipboardSync.listen((text) {
       if (mounted) {
+        final targetPeer = LanSyncService.instance.selectedTargetPeer;
+        final sender = targetPeer?['name'] as String? ?? 'Dispositivo LAN';
         setState(() {
           _history.insert(0, {
             'text': text,
             'hint_type': 'Sincronizzato LAN',
-            'source_device': 'PC Windows (LAN)',
+            'source_device': '$sender (LAN)',
             'is_locked': false,
           });
         });
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('📋 Appunti ricevuti dal PC: $text'), duration: const Duration(seconds: 3)),
+          SnackBar(content: Text('📋 Appunti ricevuti da $sender: $text'), duration: const Duration(seconds: 3)),
         );
       }
     });

@@ -40,9 +40,20 @@ impl NativeInputInjector {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     pub fn inject_mouse_move_relative(dx: i32, dy: i32) -> NexusResult<()> {
-        debug!("Mock mouse move relative: ({}, {})", dx, dy);
+        let res = std::process::Command::new("xdotool")
+            .args(["mousemove_relative", "--", &dx.to_string(), &dy.to_string()])
+            .status();
+        if let Err(e) = res {
+            tracing::warn!("Linux mousemove_relative failed: {:?}", e);
+        }
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
+    pub fn inject_mouse_move_relative(dx: i32, dy: i32) -> NexusResult<()> {
+        debug!("Mouse move relative: ({}, {})", dx, dy);
         Ok(())
     }
 
@@ -194,13 +205,40 @@ impl NativeInputInjector {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     pub fn inject_mouse_button(button: MouseButton, is_down: bool) -> NexusResult<()> {
-        debug!("Mock mouse button: {:?} down: {}", button, is_down);
+        let btn_num = match button {
+            MouseButton::Left => "1",
+            MouseButton::Middle => "2",
+            MouseButton::Right => "3",
+        };
+        let action = if is_down { "mousedown" } else { "mouseup" };
+        let _ = std::process::Command::new("xdotool")
+            .args([action, btn_num])
+            .status();
         Ok(())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
+    pub fn inject_mouse_button(button: MouseButton, is_down: bool) -> NexusResult<()> {
+        debug!("Mouse button: {:?} down: {}", button, is_down);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn inject_mouse_click(button: MouseButton) -> NexusResult<()> {
+        let btn_num = match button {
+            MouseButton::Left => "1",
+            MouseButton::Middle => "2",
+            MouseButton::Right => "3",
+        };
+        let _ = std::process::Command::new("xdotool")
+            .args(["click", btn_num])
+            .status();
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
     pub fn inject_mouse_click(_button: MouseButton) -> NexusResult<()> {
         Ok(())
     }
@@ -238,7 +276,19 @@ impl NativeInputInjector {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    pub fn inject_mouse_wheel(delta_y: i32) -> NexusResult<()> {
+        let btn_num = if delta_y > 0 { "4" } else { "5" }; // 4 = scroll up, 5 = scroll down
+        let repeats = delta_y.abs().max(1).min(10);
+        for _ in 0..repeats {
+            let _ = std::process::Command::new("xdotool")
+                .args(["click", btn_num])
+                .status();
+        }
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
     pub fn inject_mouse_wheel(_delta_y: i32) -> NexusResult<()> {
         Ok(())
     }
@@ -590,17 +640,106 @@ impl NativeInputInjector {
         Ok(())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    pub fn linux_key_name(key: &str) -> &'static str {
+        match key.to_uppercase().trim() {
+            "ESC" | "ESCAPE" => "Escape",
+            "TAB" => "Tab",
+            "CTRL" | "CONTROL" | "LCTRL" => "Control_L",
+            "RCTRL" => "Control_R",
+            "ALT" | "MENU" | "LALT" => "Alt_L",
+            "RALT" => "Alt_R",
+            "WIN" | "WINDOWS" | "LWIN" | "START" => "Super_L",
+            "RWIN" => "Super_R",
+            "ENTER" | "RETURN" => "Return",
+            "BACK" | "BACKSPACE" => "BackSpace",
+            "SPACE" => "space",
+            "DEL" | "DELETE" => "Delete",
+            "INSERT" => "Insert",
+            "HOME" => "Home",
+            "END" => "End",
+            "PAGEUP" | "PGUP" => "Prior",
+            "PAGEDOWN" | "PGDN" => "Next",
+            "UP" | "ARROWUP" => "Up",
+            "DOWN" | "ARROWDOWN" => "Down",
+            "LEFT" | "ARROWLEFT" => "Left",
+            "RIGHT" | "ARROWRIGHT" => "Right",
+            "F1" => "F1",
+            "F2" => "F2",
+            "F3" => "F3",
+            "F4" => "F4",
+            "F5" => "F5",
+            "F6" => "F6",
+            "F7" => "F7",
+            "F8" => "F8",
+            "F9" => "F9",
+            "F10" => "F10",
+            "F11" => "F11",
+            "F12" => "F12",
+            _ => "",
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn inject_keyboard_key(key: &str, is_down: Option<bool>) -> NexusResult<()> {
+        let x_key = Self::linux_key_name(key);
+        let k = if !x_key.is_empty() { x_key } else { key };
+        let cmd = match is_down {
+            Some(true) => "keydown",
+            Some(false) => "keyup",
+            None => "key",
+        };
+        let _ = std::process::Command::new("xdotool")
+            .args([cmd, k])
+            .status();
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
     pub fn inject_keyboard_key(_key: &str, _is_down: Option<bool>) -> NexusResult<()> {
         Ok(())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    pub fn inject_keyboard_combo(keys: &[&str]) -> NexusResult<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let mapped: Vec<String> = keys
+            .iter()
+            .map(|k| {
+                let xk = Self::linux_key_name(k);
+                if !xk.is_empty() {
+                    xk.to_string()
+                } else {
+                    k.to_string()
+                }
+            })
+            .collect();
+        let combo = mapped.join("+");
+        let _ = std::process::Command::new("xdotool")
+            .args(["key", &combo])
+            .status();
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
     pub fn inject_keyboard_combo(_keys: &[&str]) -> NexusResult<()> {
         Ok(())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    pub fn inject_unicode_text(text: &str) -> NexusResult<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let _ = std::process::Command::new("xdotool")
+            .args(["type", "--clearmodifiers", text])
+            .status();
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
     pub fn inject_unicode_text(_text: &str) -> NexusResult<()> {
         Ok(())
     }

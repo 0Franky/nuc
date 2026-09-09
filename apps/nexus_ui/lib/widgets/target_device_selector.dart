@@ -41,19 +41,6 @@ class TargetDeviceSelector extends StatelessWidget {
           return true;
         }).toList();
 
-        // Fallback peer if none yet discovered over LAN
-        if (peers.isEmpty) {
-          peers = [
-            {
-              "id": "00000000-0000-0000-0000-000000000001",
-              "name": lan.pcIp != null ? "PC Windows (${lan.pcIp})" : "PC Windows (Nexus Core)",
-              "device_type": "Desktop",
-              "os": "Windows",
-              "online": true,
-            }
-          ];
-        }
-
         final currentTargetId = selectedDeviceId ?? lan.selectedTargetDeviceId ?? (peers.isNotEmpty ? peers.first['id'] as String : '');
 
         return Container(
@@ -62,49 +49,71 @@ class TargetDeviceSelector extends StatelessWidget {
             color: NexusTheme.surfaceSecondary.withAlpha(160),
             borderRadius: BorderRadius.circular(NexusTheme.radiusCard),
             border: Border.all(color: NexusTheme.borderCard),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (!compact) ...[
-            Row(
-              children: [
-                const Icon(Icons.swap_horiz, size: 14, color: NexusTheme.textSecondary),
-                const SizedBox(width: 6),
-                Text(
-                  title.toUpperCase(),
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.8,
-                    color: NexusTheme.textSecondary,
-                  ),
-                ),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: NexusTheme.accentIndigoMuted,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    "${peers.length} ${peers.length == 1 ? 'nodo' : 'nodi'}",
-                    style: const TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF818CF8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!compact) ...[
+                Row(
+                  children: [
+                    const Icon(Icons.swap_horiz, size: 14, color: NexusTheme.textSecondary),
+                    const SizedBox(width: 6),
+                    Text(
+                      title.toUpperCase(),
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.8,
+                        color: NexusTheme.textSecondary,
+                      ),
                     ),
-                  ),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: NexusTheme.accentIndigoMuted,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        "${peers.length} ${peers.length == 1 ? 'nodo' : 'nodi'}",
+                        style: const TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF818CF8),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
+                const SizedBox(height: 8),
               ],
-            ),
-            const SizedBox(height: 8),
-          ],
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: peers.map((peer) {
+              if (peers.isEmpty)
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.radar_rounded,
+                      size: 14,
+                      color: NexusTheme.accentIndigo,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'In ascolto LAN... Nessun peer rilevato',
+                        style: TextStyle(
+                          fontSize: compact ? 11 : 12,
+                          color: NexusTheme.textTertiary,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              else
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: peers.map((peer) {
                 final id = peer['id'] as String? ?? '';
                 final name = peer['name'] as String? ?? 'Dispositivo';
                 final isSelected = id == currentTargetId || (peers.length == 1 && id.isNotEmpty);

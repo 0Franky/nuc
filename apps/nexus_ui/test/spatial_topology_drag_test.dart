@@ -11,21 +11,31 @@ void main() {
     setUp(() {
       LanSyncService.instance.spatialPosition = "Right";
       LanSyncService.instance.bleSpatialAutoDetect = false;
+      LanSyncService.instance.discoveredPeers = [
+        {
+          "id": "test-peer-01",
+          "name": "Dispositivo Remoto",
+          "device_type": "Mobile",
+          "os": "Android",
+          "online": true,
+        }
+      ];
+      LanSyncService.instance.selectTargetDevice("test-peer-01");
     });
 
-    testWidgets('1. Renders PC Principale and Telefono (Tu) on canvas', (tester) async {
+    testWidgets('1. Renders Host Device and Discovered Peer on canvas', (tester) async {
       await tester.pumpWidget(const MaterialApp(
         home: SpatialTopologyScreen(),
       ));
       await tester.pumpAndSettle();
 
-      // Verify Computer square and Telefono square are displayed
-      expect(find.text('PC Principale'), findsOneWidget);
-      expect(find.text('Telefono (Tu)'), findsOneWidget);
+      // Verify Host Device and Peer are displayed with real dynamic names
+      expect(find.text(LanSyncService.instance.deviceName), findsOneWidget);
+      expect(find.text('Dispositivo Remoto'), findsWidgets);
 
       // Verify explanatory text for Right position
       expect(
-        find.textContaining('bordo DESTRO del PC'),
+        find.textContaining('bordo DESTRO'),
         findsOneWidget,
       );
     });
@@ -45,7 +55,7 @@ void main() {
 
       // Verified updated orientation
       expect(
-        find.textContaining('bordo SINISTRO del PC'),
+        find.textContaining('bordo SINISTRO'),
         findsOneWidget,
       );
       expect(LanSyncService.instance.spatialPosition.toLowerCase(), 'left');
@@ -67,10 +77,26 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.textContaining('bordo SUPERIORE del PC'),
+        find.textContaining('bordo SUPERIORE'),
         findsOneWidget,
       );
       expect(LanSyncService.instance.spatialPosition.toLowerCase(), 'above');
+    });
+
+    testWidgets('4. When no peers connected, shows clean listening banner and zero fake nodes', (tester) async {
+      LanSyncService.instance.discoveredPeers = [];
+      LanSyncService.instance.selectedTargetDeviceId = null;
+      await tester.pumpWidget(const MaterialApp(
+        home: SpatialTopologyScreen(),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('In ascolto LAN... Accendi Nexus su un altro dispositivo per disporre gli schermi'),
+        findsOneWidget,
+      );
+      expect(find.text('PC Principale'), findsNothing);
+      expect(find.text('Telefono (Tu)'), findsNothing);
     });
   });
 }

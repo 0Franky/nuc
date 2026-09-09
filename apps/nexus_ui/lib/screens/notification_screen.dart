@@ -155,53 +155,6 @@ class _NotificationCenterScreenState extends State<NotificationCenterScreen> {
               ),
             ),
 
-            // Operational Test Bar (Real E2EE Zero-Trust Verification)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: NexusTheme.background,
-                border: Border(bottom: BorderSide(color: NexusTheme.borderSubtle)),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: NexusButton(
-                      label: 'Test Notifica OTP',
-                      icon: Icons.security_rounded,
-                      style: NexusButtonStyle.ghost,
-                      height: 36,
-                      onPressed: () {
-                        final otp = (100000 + (DateTime.now().millisecondsSinceEpoch % 900000)).toString();
-                        LanSyncService.instance.sendNotification(
-                          title: 'PosteID - Richiesta SPID',
-                          body: 'Il tuo codice di autorizzazione SPID è $otp. Non condividerlo con nessuno.',
-                          appName: 'PosteID',
-                        );
-                        setState(() {});
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: NexusButton(
-                      label: 'Test Notifica Testo',
-                      icon: Icons.chat_bubble_outline_rounded,
-                      style: NexusButtonStyle.secondary,
-                      height: 36,
-                      onPressed: () {
-                        LanSyncService.instance.sendNotification(
-                          title: 'WhatsApp',
-                          body: 'Ci vediamo stasera alle 20:00 per la cena?',
-                          appName: 'WhatsApp',
-                        );
-                        setState(() {});
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
             // Notifications List Tabs
             Expanded(
               child: TabBarView(

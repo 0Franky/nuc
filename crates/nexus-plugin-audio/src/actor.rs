@@ -99,8 +99,8 @@ impl AudioPluginActor {
         }
         debug!("Audio master volume set to: {:.2}", clamped);
 
-        // Update real OS master volume on Windows
-        #[cfg(target_os = "windows")]
+        // Update real OS master volume on Windows and Linux
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             set_windows_master_volume(clamped);
         }

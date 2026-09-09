@@ -23,6 +23,8 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   bool _autoPauseMedia = LanSyncService.instance.autoPauseMediaOnWalkAway;
   bool _wakeOnApproach = LanSyncService.instance.wakeOnApproach;
   bool _bleAutoDetect = LanSyncService.instance.bleSpatialAutoDetect;
+  bool _isDragging = false;
+  String? _activeDraggedPeerId;
 
   Timer? _timer;
   StreamSubscription? _topologySub;
@@ -31,14 +33,14 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   void initState() {
     super.initState();
     _topologySub = LanSyncService.instance.onTopologyChanged.listen((_) {
-      if (mounted) {
+      if (mounted && !_isDragging) {
         setState(() {
           _selectedPosition = LanSyncService.instance.spatialPosition;
         });
       }
     });
     _timer = Timer.periodic(const Duration(milliseconds: 600), (_) {
-      if (mounted) {
+      if (mounted && !_isDragging) {
         setState(() {
           if (_bleAutoDetect) {
             _selectedPosition = LanSyncService.instance.spatialPosition;
@@ -56,10 +58,14 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   }
 
   void _updatePosition(String pos) {
+    final lan = LanSyncService.instance;
+    final peers = lan.discoveredPeers.where((p) => p['id'] != lan.deviceId).toList();
+    final targetPeerId = lan.selectedTargetDeviceId ?? (peers.isNotEmpty ? peers.first['id'] as String : 'self');
+
     setState(() {
       _selectedPosition = pos;
-      LanSyncService.instance.spatialPosition = pos;
-      LanSyncService.instance.lastAutoDeterminedPosition = pos;
+      lan.spatialPosition = pos;
+      lan.lastAutoDeterminedPosition = pos;
       Offset targetOffset;
       switch (pos.toLowerCase()) {
         case 'right':
@@ -76,9 +82,8 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
           targetOffset = const Offset(-120.0, 0.0);
           break;
       }
-      LanSyncService.instance.updateDeviceOffset('self', targetOffset);
+      lan.updateDeviceOffset(targetPeerId, targetOffset, syncNetwork: true);
     });
-    LanSyncService.instance.sendSpatialArrangement("target-peer-node", pos);
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -91,9 +96,16 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isBleAvailable = LanSyncService.instance.isBleHardwareAvailable;
-    final distance = LanSyncService.instance.estimatedDistanceMeters;
-    final motion = LanSyncService.instance.proximityMotion;
+    final lan = LanSyncService.instance;
+    final isBleAvailable = lan.isBleHardwareAvailable;
+    final distance = lan.estimatedDistanceMeters;
+    final motion = lan.proximityMotion;
+    final localName = lan.deviceName;
+    final realPeers = lan.discoveredPeers
+        .where((p) => p['id'] != lan.deviceId && p['id'] != 'self')
+        .toList();
+    final targetPeer = lan.selectedTargetPeer ?? (realPeers.isNotEmpty ? realPeers.first : null);
+    final targetName = targetPeer?['name'] as String?;
 
     Color motionColor;
     String motionText;
@@ -168,32 +180,44 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              _selectedPosition.toLowerCase() == 'right'
-                                  ? '💻 Computer a Sinistra ── 📱 Telefono a Destra'
-                                  : _selectedPosition.toLowerCase() == 'left'
-                                      ? '📱 Telefono a Sinistra ── 💻 Computer a Destra'
-                                      : _selectedPosition.toLowerCase() == 'above'
-                                          ? '📱 Telefono in Alto ── 💻 Computer in Basso'
-                                          : '💻 Computer in Alto ── 📱 Telefono in Basso',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              _selectedPosition.toLowerCase() == 'right'
-                                  ? 'Il puntatore del mouse salta sul telefono uscendo dal bordo DESTRO del PC.'
-                                  : _selectedPosition.toLowerCase() == 'left'
-                                      ? 'Il puntatore del mouse salta sul telefono uscendo dal bordo SINISTRO del PC.'
-                                      : _selectedPosition.toLowerCase() == 'above'
-                                          ? 'Il puntatore del mouse salta sul telefono uscendo dal bordo SUPERIORE del PC.'
-                                          : 'Il puntatore del mouse salta sul telefono uscendo dal bordo INFERIORE del PC.',
-                              style: const TextStyle(color: NexusTheme.textSecondary, fontSize: 11.5),
-                            ),
-                            const SizedBox(height: 4),
-                            const Text(
-                              '💡 Trascina liberamente il quadrato del Telefono oppure seleziona una posizione:',
-                              style: TextStyle(color: NexusTheme.successGreen, fontSize: 10.5, fontStyle: FontStyle.italic),
-                            ),
+                            if (targetName != null) ...[
+                              Text(
+                                _selectedPosition.toLowerCase() == 'right'
+                                    ? '🖥️ $localName ── 📱 $targetName (a Destra)'
+                                    : _selectedPosition.toLowerCase() == 'left'
+                                        ? '📱 $targetName (a Sinistra) ── 🖥️ $localName'
+                                        : _selectedPosition.toLowerCase() == 'above'
+                                            ? '📱 $targetName (in Alto) ── 🖥️ $localName'
+                                            : '🖥️ $localName ── 📱 $targetName (in Basso)',
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                _selectedPosition.toLowerCase() == 'right'
+                                    ? 'Il puntatore del mouse salta su $targetName uscendo dal bordo DESTRO di $localName.'
+                                    : _selectedPosition.toLowerCase() == 'left'
+                                        ? 'Il puntatore del mouse salta su $targetName uscendo dal bordo SINISTRO di $localName.'
+                                        : _selectedPosition.toLowerCase() == 'above'
+                                            ? 'Il puntatore del mouse salta su $targetName uscendo dal bordo SUPERIORE di $localName.'
+                                            : 'Il puntatore del mouse salta su $targetName uscendo dal bordo INFERIORE di $localName.',
+                                style: const TextStyle(color: NexusTheme.textSecondary, fontSize: 11.5),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text(
+                                '💡 Trascina liberamente il dispositivo nello spazio 2D oppure seleziona un quadrante:',
+                                style: TextStyle(color: NexusTheme.successGreen, fontSize: 10.5, fontStyle: FontStyle.italic),
+                              ),
+                            ] else ...[
+                              const Text(
+                                '📡 In attesa di dispositivi LAN connessi...',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
+                              ),
+                              const SizedBox(height: 3),
+                              const Text(
+                                'Connetti un secondo nodo Nexus sulla stessa rete Wi-Fi per disporre gli schermi.',
+                                style: TextStyle(color: NexusTheme.textSecondary, fontSize: 11.5),
+                              ),
+                            ],
                             const SizedBox(height: 8),
                             Wrap(
                               spacing: 6,
@@ -558,57 +582,6 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                     LanSyncService.instance.saveSettingBool('wakeOnApproach', v);
                   },
                 ),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: NexusButton(
-                        label: 'Passa a DX',
-                        icon: Icons.arrow_forward_rounded,
-                        style: NexusButtonStyle.secondary,
-                        onPressed: () {
-                          LanSyncService.instance.sendUniversalControlHop(2, 540, 1920, 1080);
-                          ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('🖱️ Test Passaggio Cursore a Destra inviato!'), duration: Duration(seconds: 2)),
-                          );
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: NexusButton(
-                        label: 'Blocca PC',
-                        icon: Icons.lock_rounded,
-                        style: NexusButtonStyle.ghost,
-                        onPressed: () {
-                          LanSyncService.instance.sendProximityTrigger("LOCK_WORKSTATION");
-                          ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('🔒 Test Blocco PC inviato!'), duration: Duration(seconds: 2)),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                NexusButton(
-                  label: 'Test Allontanamento (Pausa PC & Handoff)',
-                  icon: Icons.directions_walk_rounded,
-                  style: NexusButtonStyle.secondary,
-                  onPressed: () {
-                    LanSyncService.instance.triggerProximityDepartureHandoff(simulate: true);
-                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('🚶 Test Allontanamento: Pausa PC richiesta e notifica emessa!'),
-                        backgroundColor: NexusTheme.accentIndigo,
-                        duration: Duration(seconds: 3),
-                      ),
-                    );
-                  },
-                ),
               ],
             ),
           ),
@@ -645,11 +618,15 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   }
 
   Widget _buildSpatialCanvas() {
-    final liveDistance = LanSyncService.instance.estimatedDistanceMeters;
-    final selfOffset = LanSyncService.instance.getDeviceOffset('self');
+    final lan = LanSyncService.instance;
+    final liveDistance = lan.estimatedDistanceMeters;
+    final localName = lan.deviceName;
+    final isLocalMobile = Platform.isAndroid || Platform.isIOS;
 
-    // List of peers from LanSyncService
-    final peers = LanSyncService.instance.discoveredPeers;
+    // Filter real LAN peers (excluding this device)
+    final peers = lan.discoveredPeers
+        .where((p) => p['id'] != lan.deviceId && p['id'] != 'self')
+        .toList();
 
     return Container(
       width: double.infinity,
@@ -664,96 +641,45 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
           final centerX = constraints.maxWidth / 2;
           final centerY = constraints.maxHeight / 2;
 
-          return Stack(
-            clipBehavior: Clip.none,
-            children: [
-              // Grid background lines for spatial orientation
-              CustomPaint(
-                size: Size(constraints.maxWidth, constraints.maxHeight),
-                painter: const SpatialGridPainter(),
-              ),
-
-              // PC Node (Fixed in Center)
-              Positioned(
-                left: centerX - 58,
-                top: centerY - 47,
-                child: Container(
-                  width: 116,
-                  height: 94,
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF6366F1).withAlpha(40),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFF6366F1), width: 1.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF6366F1).withAlpha(60),
-                        blurRadius: 10,
-                        spreadRadius: 1,
-                      )
-                    ],
-                  ),
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.desktop_windows_rounded, size: 20, color: Color(0xFF818CF8)),
-                        const SizedBox(height: 2),
-                        const Text(
-                          'PC Principale',
-                          style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.white),
-                          textAlign: TextAlign.center,
-                        ),
-                        Text(
-                          liveDistance != null ? '${liveDistance.toStringAsFixed(1)}m' : 'Host Centro',
-                          style: const TextStyle(fontSize: 8.5, color: Colors.grey),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
-                  ),
+          return GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTapUp: (details) {
+              if (peers.isEmpty) return;
+              final relX = details.localPosition.dx - centerX;
+              final relY = details.localPosition.dy - centerY;
+              if (relX.abs() < 40 && relY.abs() < 40) return; // tapped center
+              if (relX.abs() > relY.abs()) {
+                _updatePosition(relX >= 0 ? "Right" : "Left");
+              } else {
+                _updatePosition(relY >= 0 ? "Below" : "Above");
+              }
+            },
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // Grid background lines for spatial orientation
+                CustomPaint(
+                  size: Size(constraints.maxWidth, constraints.maxHeight),
+                  painter: const SpatialGridPainter(),
                 ),
-              ),
 
-              // Connection line from PC center to Phone
-              CustomPaint(
-                size: Size(constraints.maxWidth, constraints.maxHeight),
-                painter: SpatialLinePainter(
-                  start: Offset(centerX, centerY),
-                  end: Offset(centerX + selfOffset.dx, centerY + selfOffset.dy),
-                  color: const Color(0xFF10B981).withAlpha(120),
-                ),
-              ),
-
-              // Primary Phone Node (Freeform Draggable anywhere in 2D space)
-              Positioned(
-                left: (centerX + selfOffset.dx) - 52,
-                top: (centerY + selfOffset.dy) - 48,
-                child: GestureDetector(
-                  onPanUpdate: (details) {
-                    setState(() {
-                      final newX = (selfOffset.dx + details.delta.dx).clamp(-centerX + 60, centerX - 60);
-                      final newY = (selfOffset.dy + details.delta.dy).clamp(-centerY + 50, centerY - 50);
-                      final updated = Offset(newX, newY);
-                      LanSyncService.instance.updateDeviceOffset('self', updated);
-                      _selectedPosition = LanSyncService.instance.spatialPosition;
-                    });
-                  },
+                // Center Node: Local Host (This Device)
+                Positioned(
+                  left: centerX - 58,
+                  top: centerY - 47,
                   child: Container(
-                    width: 104,
-                    height: 96,
+                    width: 116,
+                    height: 94,
                     padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withAlpha(50),
+                      color: const Color(0xFF6366F1).withAlpha(45),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFF10B981), width: 2.0),
+                      border: Border.all(color: const Color(0xFF6366F1), width: 1.5),
                       boxShadow: [
                         BoxShadow(
-                          color: const Color(0xFF10B981).withAlpha(90),
-                          blurRadius: 12,
-                          spreadRadius: 2,
+                          color: const Color(0xFF6366F1).withAlpha(60),
+                          blurRadius: 10,
+                          spreadRadius: 1,
                         )
                       ],
                     ),
@@ -763,52 +689,99 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.phone_android_rounded, size: 20, color: Color(0xFF10B981)),
-                          const SizedBox(height: 1),
-                          const Text(
-                            'Telefono (Tu)',
-                            style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.white),
+                          Icon(
+                            isLocalMobile ? Icons.phone_android_rounded : Icons.desktop_windows_rounded,
+                            size: 20,
+                            color: const Color(0xFF818CF8),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            localName,
+                            style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.white),
                             textAlign: TextAlign.center,
                           ),
                           Text(
-                            liveDistance != null ? '${liveDistance.toStringAsFixed(1)}m • $_selectedPosition' : _selectedPosition,
-                            style: const TextStyle(fontSize: 8, color: Color(0xFF6EE7B7)),
+                            liveDistance != null ? '${liveDistance.toStringAsFixed(1)}m • Host' : 'Host (Questo)',
+                            style: const TextStyle(fontSize: 8.5, color: Colors.grey),
                             textAlign: TextAlign.center,
-                          ),
-                          const Text(
-                            '✥ Trascina libero',
-                            style: TextStyle(fontSize: 7.5, color: Colors.white60),
                           ),
                         ],
                       ),
                     ),
                   ),
                 ),
-              ),
 
-              // Other Discovered Multi-Devices (e.g. tablet, second laptop, smart display)
-              for (int i = 0; i < peers.length; i++) ...[
-                if (peers[i]['id'] != 'self' && peers[i]['id'] != LanSyncService.instance.deviceId)
-                  _buildPeerNode(peers[i], i, centerX, centerY),
-              ],
-
-              // Spatial Canvas Helper Overlay
-              Positioned(
-                top: 8,
-                left: 10,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withAlpha(120),
-                    borderRadius: BorderRadius.circular(6),
+                // Peer Connection Lines
+                for (final peer in peers) ...[
+                  CustomPaint(
+                    size: Size(constraints.maxWidth, constraints.maxHeight),
+                    painter: SpatialLinePainter(
+                      start: Offset(centerX, centerY),
+                      end: Offset(
+                        centerX + lan.getDeviceOffset(peer['id'] as String? ?? '').dx,
+                        centerY + lan.getDeviceOffset(peer['id'] as String? ?? '').dy,
+                      ),
+                      color: NexusDeviceColors.colorForDeviceName(peer['name'] as String? ?? 'Peer').withAlpha(120),
+                    ),
                   ),
-                  child: Text(
-                    'Canvas 2D Libero: Posiziona i dispositivi attorno al PC (in diagonale, sopra, sotto, etc.)',
-                    style: TextStyle(fontSize: 9, color: Colors.grey.shade300),
+                ],
+
+                // Real Discovered Peer Nodes (Draggable with 1.4x responsiveness)
+                for (int i = 0; i < peers.length; i++)
+                  _buildPeerNode(peers[i], i, centerX, centerY),
+
+                // If no peers are discovered, show clean radar listening state
+                if (peers.isEmpty)
+                  Positioned(
+                    bottom: 12,
+                    left: 16,
+                    right: 16,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E293B).withAlpha(220),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: NexusTheme.borderCard),
+                      ),
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.wifi_tethering_rounded,
+                            size: 16,
+                            color: Color(0xFF818CF8),
+                          ),
+                          SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'In ascolto LAN... Accendi Nexus su un altro dispositivo per disporre gli schermi',
+                              style: TextStyle(fontSize: 10.5, color: Colors.white70, fontStyle: FontStyle.italic),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                // Spatial Canvas Helper Overlay
+                Positioned(
+                  top: 8,
+                  left: 10,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withAlpha(120),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      'Canvas 2D: Trascina i nodi per impostare la posizione fisica dei dispositivi',
+                      style: TextStyle(fontSize: 9, color: Colors.grey.shade300),
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           );
         },
       ),
@@ -816,43 +789,104 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   }
 
   Widget _buildPeerNode(Map<String, dynamic> peer, int index, double centerX, double centerY) {
+    final lan = LanSyncService.instance;
     final peerId = peer['id'] as String? ?? 'peer-$index';
     final name = peer['name'] as String? ?? 'Dispositivo ${index + 1}';
-    final peerOffset = LanSyncService.instance.getDeviceOffset(peerId);
+    final liveDistance = lan.estimatedDistanceMeters;
+    final peerOffset = lan.getDeviceOffset(peerId);
+    final devColor = NexusDeviceColors.colorForDeviceName(name);
+
+    final os = (peer['os'] as String?)?.toLowerCase() ?? '';
+    final isDesktop = (peer['device_type'] as String?) == 'Desktop' ||
+        os.contains('windows') ||
+        os.contains('mac') ||
+        os.contains('linux') ||
+        name.toLowerCase().contains('pc');
+
+    final isSelected = lan.selectedTargetDeviceId == peerId || lan.discoveredPeers.length == 1;
 
     return Positioned(
-      left: (centerX + peerOffset.dx) - 45,
-      top: (centerY + peerOffset.dy) - 35,
+      left: (centerX + peerOffset.dx) - 52,
+      top: (centerY + peerOffset.dy) - 46,
       child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: (details) {
+          _isDragging = true;
+          _activeDraggedPeerId = peerId;
+        },
         onPanUpdate: (details) {
+          // Responsive 1.4x drag multiplier: moving finger effortlessly traverses canvas in 1 motion
+          const dragMultiplier = 1.4;
+          final newX = (peerOffset.dx + details.delta.dx * dragMultiplier).clamp(-centerX + 55, centerX - 55);
+          final newY = (peerOffset.dy + details.delta.dy * dragMultiplier).clamp(-centerY + 45, centerY - 45);
+          final updated = Offset(newX, newY);
+          lan.updateDeviceOffset(peerId, updated, syncNetwork: false);
           setState(() {
-            final newX = (peerOffset.dx + details.delta.dx).clamp(-centerX + 50, centerX - 50);
-            final newY = (peerOffset.dy + details.delta.dy).clamp(-centerY + 40, centerY - 40);
-            LanSyncService.instance.updateDeviceOffset(peerId, Offset(newX, newY));
+            _selectedPosition = lan.spatialPosition;
           });
         },
+        onPanEnd: (details) {
+          _isDragging = false;
+          _activeDraggedPeerId = null;
+          final finalOffset = lan.getDeviceOffset(peerId);
+          lan.updateDeviceOffset(peerId, finalOffset, syncNetwork: true);
+          setState(() {
+            _selectedPosition = lan.spatialPosition;
+          });
+        },
+        onPanCancel: () {
+          _isDragging = false;
+          _activeDraggedPeerId = null;
+        },
         child: Container(
-          width: 90,
-          height: 70,
+          width: 104,
+          height: 92,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
           decoration: BoxDecoration(
-            color: const Color(0xFFF59E0B).withAlpha(40),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.devices_other_rounded, size: 18, color: Color(0xFFF59E0B)),
-              const SizedBox(height: 2),
-              Text(
-                name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Colors.white),
-                textAlign: TextAlign.center,
-              ),
-              const Text('✥ Trascina', style: TextStyle(fontSize: 7.5, color: Colors.white60)),
+            color: devColor.withAlpha(50),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isSelected ? devColor : devColor.withAlpha(160),
+              width: isSelected ? 2.2 : 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: devColor.withAlpha(isSelected ? 90 : 50),
+                blurRadius: 12,
+                spreadRadius: 1,
+              )
             ],
+          ),
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  isDesktop ? Icons.desktop_windows_rounded : Icons.phone_android_rounded,
+                  size: 20,
+                  color: devColor,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.white),
+                  textAlign: TextAlign.center,
+                ),
+                Text(
+                  liveDistance != null ? '${liveDistance.toStringAsFixed(1)}m • $_selectedPosition' : _selectedPosition,
+                  style: TextStyle(fontSize: 8.5, color: devColor),
+                  textAlign: TextAlign.center,
+                ),
+                const Text(
+                  '✥ Trascina libero',
+                  style: TextStyle(fontSize: 7.5, color: Colors.white60),
+                ),
+              ],
+            ),
           ),
         ),
       ),

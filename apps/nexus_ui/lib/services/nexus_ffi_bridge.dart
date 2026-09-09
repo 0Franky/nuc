@@ -404,7 +404,8 @@ class NexusFfiBridge {
     }
 
     final namePtr = fileName.toNativeUtf8();
-    final peerPtr = (targetPeerId ?? "00000000-0000-0000-0000-000000000001").toNativeUtf8();
+    final effectivePeer = targetPeerId ?? LanSyncService.instance.selectedTargetDeviceId ?? "broadcast";
+    final peerPtr = effectivePeer.toNativeUtf8();
     final resPtr = _nexusOfferFileTransfer!(namePtr, peerPtr, fileSizeBytes);
     malloc.free(namePtr);
     malloc.free(peerPtr);

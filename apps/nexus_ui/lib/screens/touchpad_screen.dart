@@ -16,7 +16,11 @@ class TouchpadRemoteScreen extends StatefulWidget {
 }
 
 class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
-  String get _targetPeerId => LanSyncService.instance.selectedTargetDeviceId ?? "00000000-0000-0000-0000-000000000001";
+  String get _targetPeerId =>
+      LanSyncService.instance.selectedTargetDeviceId ??
+      (LanSyncService.instance.discoveredPeers.isNotEmpty
+          ? LanSyncService.instance.discoveredPeers.first['id'] as String
+          : "");
   bool _gyroPointerActive = false;
   StreamSubscription<GyroscopeEvent>? _gyroSub;
   final Map<int, Offset> _currentPointers = {};

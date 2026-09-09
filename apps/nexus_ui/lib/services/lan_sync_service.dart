@@ -25,7 +25,13 @@ class LanSyncService extends ChangeNotifier {
   Timer? _keepAliveTimer;
   bool _isSearching = false;
 
-  String _deviceId = "00000000-0000-0000-0000-000000000002";
+  static String _generateInitUuid() {
+    final r = math.Random();
+    final rawHex = List.generate(32, (_) => r.nextInt(16).toRadixString(16)).join();
+    return '${rawHex.substring(0,8)}-${rawHex.substring(8,12)}-4${rawHex.substring(13,16)}-a${rawHex.substring(17,20)}-${rawHex.substring(20,32)}';
+  }
+
+  String _deviceId = _generateInitUuid();
   String get deviceId => _deviceId;
   set deviceId(String id) => _deviceId = id;
   String _customDeviceName = "";
@@ -216,16 +222,17 @@ class LanSyncService extends ChangeNotifier {
     'self': const Offset(-120.0, 0.0),
   };
 
-  void updateDeviceOffset(String id, Offset offset) {
+  void updateDeviceOffset(String id, Offset offset, {bool syncNetwork = true}) {
     customDeviceOffsets[id] = offset;
-    // Derive macro quadrant if self
-    if (id == 'self') {
-      if (offset.dx.abs() > offset.dy.abs()) {
-        spatialPosition = offset.dx >= 0 ? "Right" : "Left";
-      } else {
-        spatialPosition = offset.dy >= 0 ? "Below" : "Above";
-      }
-      sendSpatialArrangement("target-peer-node", spatialPosition, customOffset: offset);
+    // Derive macro quadrant relative to center
+    if (offset.dx.abs() > offset.dy.abs()) {
+      spatialPosition = offset.dx >= 0 ? "Right" : "Left";
+    } else {
+      spatialPosition = offset.dy >= 0 ? "Below" : "Above";
+    }
+    if (syncNetwork) {
+      final targetPeer = (id == 'self' || id.isEmpty) ? (selectedTargetDeviceId ?? '') : id;
+      sendSpatialArrangement(targetPeer, spatialPosition, customOffset: offset);
     }
   }
 
@@ -819,7 +826,7 @@ class LanSyncService extends ChangeNotifier {
                   "type": "CLIPBOARD_REVEAL_RESPONSE",
                   "entry_id": entryId,
                   "text": cleartext,
-                  "source_device": Platform.isAndroid ? 'Smartphone Android' : 'PC Windows',
+                  "source_device": deviceName,
                 };
                 _ws?.add(jsonEncode(respMsg));
                 NexusLogger.log("PRIVACY_GATE", "Authorized and sent CLIPBOARD_REVEAL_RESPONSE for entry $entryId via E2EE");
@@ -1379,8 +1386,6 @@ class LanSyncService extends ChangeNotifier {
       final entryId = "sec_${DateTime.now().millisecondsSinceEpoch}_${(DateTime.now().microsecond % 1000)}";
       _pendingLocalSecrets[entryId] = text; // Original complete text preserved locally
 
-      final deviceName = Platform.isAndroid ? 'Smartphone Android' : 'PC Windows';
-
       if (_ws != null && isConnected) {
         final msg = {
           "type": "CLIPBOARD_SECRET_ANNOUNCE",
@@ -1407,7 +1412,7 @@ class LanSyncService extends ChangeNotifier {
       final msg = {
         "type": "CLIPBOARD_REVEAL_REQUEST",
         "entry_id": entryId,
-        "requesting_device": Platform.isAndroid ? 'Smartphone Android' : 'PC Windows',
+        "requesting_device": deviceName,
       };
       try {
         _ws!.add(jsonEncode(msg));
@@ -2124,7 +2129,7 @@ class LanSyncService extends ChangeNotifier {
     _outgoingFileCache[fileId] = fileBytes;
     const chunkSize = 64 * 1024; // 64 KB chunks
     final totalChunks = fileSize == 0 ? 1 : (fileSize / chunkSize).ceil();
-    final senderName = Platform.isAndroid ? 'Smartphone Android' : 'PC Windows';
+    final senderName = deviceName;
 
     // 1. Invia offerta
     final offerMsg = {
@@ -2190,8 +2195,8 @@ class LanSyncService extends ChangeNotifier {
   }) {
     final censorResult = censorSecretsInText(body);
     final id = 'notif_${DateTime.now().millisecondsSinceEpoch}_${(title.hashCode.abs() % 1000)}';
-    final thisDeviceName = Platform.isAndroid ? 'Smartphone Android' : 'PC Principale (Windows 11)';
-    final thisDeviceId = _deviceId ?? (Platform.isAndroid ? 'nexus-android' : 'nexus-pc');
+    final thisDeviceName = deviceName;
+    final thisDeviceId = deviceId;
 
     if (censorResult.hasSecret) {
       _pendingLocalNotificationSecrets[id] = body;
@@ -2252,7 +2257,7 @@ class LanSyncService extends ChangeNotifier {
       final msg = {
         "type": "NOTIFICATION_REVEAL_REQUEST",
         "id": notifId,
-        "requesting_device": Platform.isAndroid ? 'Smartphone Android' : 'PC Principale (Windows 11)',
+        "requesting_device": deviceName,
       };
       try {
         _ws!.add(jsonEncode(msg));

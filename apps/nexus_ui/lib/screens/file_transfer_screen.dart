@@ -196,7 +196,7 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 
     final targetPeer = LanSyncService.instance.selectedTargetPeer;
     final targetPeerId = LanSyncService.instance.selectedTargetDeviceId;
-    final targetDevice = targetPeer?['name'] as String? ?? (Platform.isAndroid ? 'PC Windows' : 'Smartphone Android');
+    final targetDevice = targetPeer?['name'] as String? ?? (LanSyncService.instance.discoveredPeers.isNotEmpty ? LanSyncService.instance.discoveredPeers.first['name'] as String : 'Dispositivo Selezionato');
 
     final offer = NexusFfiBridge.instance.offerFileTransfer(name, sizeBytes, targetPeerId: targetPeerId);
     final fileId = offer['file_id']?.toString() ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
@@ -294,7 +294,7 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
               const SizedBox(height: 12),
             ],
             const Text(
-              'Puoi inserire il percorso assoluto di un file esistente su disco, oppure generare un file reale di test istantaneo:',
+              'Inserisci il percorso assoluto di un file esistente su disco:',
               style: TextStyle(fontSize: 13, color: NexusTheme.textSecondary),
             ),
             const SizedBox(height: 12),
@@ -305,26 +305,6 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                 hintText: 'Es: C:\\Documenti\\file.pdf',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
               ),
-            ),
-            const SizedBox(height: 14),
-            NexusButton(
-              label: 'Invia File Reale di Test (sample.txt)',
-              icon: Icons.bolt_rounded,
-              style: NexusButtonStyle.secondary,
-              isExpanded: true,
-              onPressed: () async {
-                Navigator.pop(ctx);
-                final tmpDir = Directory.systemTemp;
-                final testFile = File('${tmpDir.path}${Platform.pathSeparator}Nexus_Test_Document.txt');
-                await testFile.writeAsString(
-                  'Nexus Universal Ecosystem P2P Transfer Test\n'
-                  'Timestamp: ${DateTime.now().toIso8601String()}\n'
-                  'Crittografia: ChaCha20-Poly1305\n'
-                  'Integrità: Master BLAKE3 Hash\n'
-                  'Payload Chunk Size: 64 KB\n',
-                );
-                await _streamRealFile(testFile.path, 'Nexus_Test_Document.txt', await testFile.length());
-              },
             ),
           ],
         ),
