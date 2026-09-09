@@ -38,3 +38,26 @@ Quando l'utente ritorna verso la scrivania (distanza stimata $< 1.5\text{ metri}
    - Sullo smartphone appare una notifica con prompt biometrico (Impronta o Face ID).
    - Confermando sul telefono, il PC si sblocca istantaneamente senza dover digitare la password lunga sulla tastiera.
 3. **Pre-Riscaldamento Connessione P2P**: La sessione QUIC viene ripristinata in anticipo per essere pronta a ricevere file, input o comandi.
+
+---
+
+## 🔒 4. Macchina a Stati Isteretica & Gate "Single-Fire" (Anti-Spam)
+
+Per evitare notifiche ripetute a ogni passo compiuto dall'utente, il motore di prossimità adotta una macchina a stati con isteresi asimmetrica:
+
+```mermaid
+stateDiagram-v2
+    [*] --> InPostazione: Distanza < 1.2m
+    InPostazione --> InAllontanamento: Distanza > 2.2m (Soglia Allontanamento)
+    InAllontanamento --> Allontanato: Emetti Notifica (1 volta sola!) & Pausa Media
+    Allontanato --> InAvvicinamento: Distanza < 1.2m (Soglia Ritorno con Isteresi)
+    InAvvicinamento --> InPostazione: Reset Gate & Notifica Bentornato
+```
+
+1. **Gate "Single-Fire" (`_hasFiredDepartureAlert`)**:
+   - Quando l'utente supera la soglia di allontanamento ($2.2\text{m}$), l'avviso scatta **esattamente una volta**.
+   - Eventuali fluttuazioni successive o passi ulteriori a $2.5\text{m}, 3.0\text{m}, 4.0\text{m}$ non generano alcun duplicato né ulteriori popup.
+2. **Isteresi e Reset al Rientro**:
+   - Lo stato di allontanamento viene resettato **esclusivamente** quando la distanza scende sotto la soglia di ritorno ($1.2\text{m}$).
+   - Al rientro, viene emesso l'avviso di bentornato ed il gate viene riarmato per il prossimo ciclo di allontanamento.
+

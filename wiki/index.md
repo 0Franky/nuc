@@ -71,6 +71,8 @@ Questa documentazione è divisa in 5 sezioni principali:
    - Smartphone come webcam HD e microfono per PC
 6. [06. Proximity & Presence Detection](./03-plugin-specifications/06-proximity-and-presence.md)
    - Tracciamento RSSI BLE per auto-lock e auto-pause quando ci si allontana
+7. [07. Notification Sync, Mirroring & Zero-Trust Privacy Gate](./03-plugin-specifications/07-notification-sync-and-mirroring.md)
+   - Mirroring notifiche Windows WinRT, mascheramento segreti/PII e colori per dispositivo
 
 ---
 

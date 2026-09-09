@@ -16,8 +16,10 @@
 6. [Flusso 5: Proximity Motion & Walk-Away Auto-Lock PC](#flusso-5-proximity-motion--walk-away-auto-lock-pc)
 7. [Flusso 6: Private Listening Audio Relay (Cattura WASAPI & Dual-Mode)](#flusso-6-private-listening-audio-relay-cattura-wasapi--dual-mode)
 8. [Flusso 7: Universal Clipboard Synchronization](#flusso-7-universal-clipboard-synchronization)
-9. [Flusso 8: File Transfer P2P ad Alta Velocità con Verifica SHA-256](#flusso-8-file-transfer-p2p-ad-alta-velocit-con-verifica-sha-256)
-10. [Regolamento di Manutenzione del Codice & Matrice Componenti](#10-regolamento-di-manutenzione-del-codice--matrice-componenti)
+9. [Flusso 8: File Transfer P2P ad Alta Velocità con Verifica BLAKE3](#flusso-8-file-transfer-p2p-ad-alta-velocit-con-verifica-sha-256)
+10. [Flusso 9: OS Notification Mirroring & Forwarding (WinRT Listener, Colori Dispositivo & Tab Separate)](#flusso-9-os-notification-mirroring--forwarding)
+11. [Flusso 10: Remote Media Controller & Notifica Lockscreen MediaStyle](#flusso-10-remote-media-controller--notifica-lockscreen-mediastyle)
+12. [Regolamento di Manutenzione del Codice & Matrice Componenti](#10-regolamento-di-manutenzione-del-codice--matrice-componenti)
 
 ---
 
@@ -37,6 +39,7 @@ graph TD
             PL_CLIP["📋 ClipboardPluginActor"]
             PL_PROX["📡 ProximityPluginActor"]
             PL_FILE["📁 FilePluginActor"]
+            PL_NOTIF["🔔 NotificationPluginActor (WinRT)"]
         end
         
         subgraph Transports ["Network Servers & Listeners"]
@@ -274,8 +277,10 @@ sequenceDiagram
 ```
 
 ### 📋 Dettaglio Passo-Passo:
-1. **Stima Presenza**: `nexus-plugin-proximity` calcola la distanza del peer combinando i tempi di andata e ritorno dei pacchetti UDP e la continuità dei frame WebSocket con filtro di Kalman RSSI.
-2. **Rilevamento Allontanamento**: Se il peer transita da `Near` a `Far` o si disconnette per oltre il timeout di sicurezza (10 secondi), scatta l'azione di prossimità configurata.
+1. **Stima Presenza & Filtraggio Kalman**: `nexus-plugin-proximity` calcola la distanza del peer combinando i tempi di andata e ritorno dei pacchetti UDP e la continuità dei frame WebSocket con filtro di Kalman 1D sull'RSSI.
+2. **Macchina a Stati con Isteresi & Gate "Single-Fire" (Anti-Spam)**:
+   - **Allontanamento ($> 2.2\text{m}$)**: Quando l'utente supera la soglia di allontanamento, il gate `_hasFiredDepartureAlert` scatta **esattamente una volta**. Viene emesso l'avviso di allontanamento e messo in pausa il media del PC. Nessun avviso ulteriore viene generato a ogni passo successivo ($2.5\text{m}, 3.0\text{m}, 4.0\text{m}$, ecc.).
+   - **Rientro alla Postazione ($< 1.2\text{m}$)**: Quando l'utente si riavvicina alla postazione scendendo sotto la soglia di ritorno, lo stato `_isDeparted` viene resettato e il gate `_hasFiredDepartureAlert` viene riarmato. Viene emesso l'avviso di bentornato ed il sistema è pronto per il ciclo successivo.
 3. **Esecuzione Lock & Sicurezza Developer**: Per evitare disconnessioni involontarie dell'account Windows durante build, test automatici o sessioni di sviluppo, la chiamata reale a `LockWorkStation()` richiede esplicitamente la variabile d'ambiente `NEXUS_ENABLE_REAL_SCREEN_LOCK=1`. In assenza di essa, il lock viene simulato nei log e verificato tramite test senza interrompere la sessione utente.
 
 ---
@@ -408,6 +413,83 @@ sequenceDiagram
 
 ---
 
+## Flusso 9: OS Notification Mirroring & Forwarding (WinRT Listener, Colori Dispositivo & Tab Separate)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Win_OS as 🪟 Windows OS (Toast Notification)
+    participant Win_Actor as 🔔 NotificationPluginActor (WinRT)
+    participant WS_Hub as 🌐 Media/Notif WebSocket (Port 28471)
+    participant Flutter_App as 📱 Nexus Mobile (LanSyncService)
+    participant Privacy_Gate as 🛡️ Zero-Trust Gate (censorSecretsInText)
+    participant UI_Tabs as 📑 Centro Notifiche (Tab Notifiche vs Sistema)
+
+    Note over Win_OS,Win_Actor: 1. Intercettazione Notifiche OS
+    Win_OS->>Win_Actor: Toast generata (WhatsApp, Chrome, Claude, Telegram, etc.)
+    Win_Actor->>Win_Actor: Estrazione sincrona COM: (id, app_name, title, body)
+    Win_Actor->>Win_Actor: Deduplicazione ID (set limitato a 500 voci recenti)
+    Win_Actor->>Win_Actor: Generazione timestamp ISO8601 (time_utils.rs)
+
+    Note over Win_Actor,Flutter_App: 2. Instradamento WebSocket Broadcast
+    Win_Actor->>WS_Hub: NOTIFICATION_SYNC JSON payload (category="osNotification")
+    WS_Hub->>Flutter_App: Broadcast su ws://...:28471/media
+
+    Note over Flutter_App,UI_Tabs: 3. Ricezione, Sanitizzazione & Presentazione UI
+    Flutter_App->>Privacy_Gate: censorSecretsInText(body) -> Maschera OTP, API key, carte, IBAN
+    Flutter_App->>Flutter_App: Assegna colore mittente via NexusDeviceColors (Indigo=PC, Emerald=Mobile, ecc.)
+    Flutter_App->>UI_Tabs: Routing categorico:
+    alt category == osNotification
+        UI_Tabs->>UI_Tabs: Inserimento nella Tab "Notifiche" con bordo sinistro 4px colorato
+    else category == internalApp (Proximity / Handoff)
+        UI_Tabs->>UI_Tabs: Inserimento nella Tab "Sistema" (non inquina le notifiche OS)
+    end
+```
+
+### 📋 Dettaglio Passo-Passo:
+1. **Listener Nativo WinRT**: `NotificationPluginActor` interroga periodicamente l'API Windows `UserNotificationListener::Current()`, estraendo le notifiche Toast senza bloccare il runtime Tokio.
+2. **Deduplicazione Intelligente**: Mantiene in memoria un set rotativo di ID notifiche già inoltrate (limitato a 500 elementi) per prevenire duplicati o rimbalzi.
+3. **Palette Colori Consistente (`NexusDeviceColors`)**: Ogni notifica riceve un colore persistente assegnato al dispositivo mittente (PC: Indigo, Telefono: Smeraldo, ecc.), visibile a colpo d'occhio sul bordo laterale sinistro della card.
+4. **Tab Notifiche vs Sistema**: Le notifiche esterne del PC vengono mostrate nella tab principale "Notifiche", mentre gli avvisi interni di telemetria Nexus risiedono nella tab "Sistema".
+
+---
+
+## Flusso 10: Remote Media Controller & Notifica Lockscreen MediaStyle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PC_Player as 📺 Browser / Player PC (YouTube / Netflix / Spotify)
+    participant Ext as 🧩 Browser Extension / SMTC
+    participant Daemon as ⚙️ MediaPluginActor (WS 28471)
+    participant Phone_Svc as 📱 LanSyncService (Flutter Mobile)
+    participant Android_OS as 🤖 Android System Notification Bar & Lock Screen
+
+    Note over PC_Player,Daemon: 1. Rilevamento Playback su PC
+    PC_Player->>Ext: Riproduzione attiva (Titolo, Canale, Durata, Minutaggio)
+    Ext->>Daemon: JSON MediaStateUpdate { is_playing: true, position_ms, duration_ms, media_title }
+    Daemon->>Phone_Svc: WebSocket Broadcast: {"type":"MEDIA_UPDATE", ...}
+
+    Note over Phone_Svc,Android_OS: 2. Generazione Notifica Lockscreen Android MediaStyle
+    Phone_Svc->>Android_OS: NotificationCompat.Builder(MEDIA_CHANNEL)
+    Android_OS->>Android_OS: Mostra Notifica Persistente su Lock Screen:
+    Note right of Android_OS: 🎵 [YouTube PC] Interstellar - Stay<br/>⏮️ Riavvia | ⏸️ Pausa | ▶️ Play | 🔊 Volume<br/>Timeline progressiva sincronizzata
+    
+    Note over Android_OS,Daemon: 3. Controllo Remoto da Lock Screen
+    User->>Android_OS: Tap su "PAUSE" / "PLAY" / "SEEK" direttamente da Lock Screen
+    Android_OS->>Phone_Svc: PendingIntent BroadcastReceiver -> LanSyncService.sendMediaControl(action)
+    Phone_Svc->>Daemon: JSON: {"action": "PAUSE"} / {"action": "PLAY"}
+    Daemon->>Ext: Inoltro comando WebSocket -> Iniezione JavaScript nel Player Web
+    Daemon->>PC_Player: Win32 SendInput VK_MEDIA_PLAY_PAUSE
+```
+
+### 📋 Dettaglio Passo-Passo:
+1. **Aggancio Stato Multimediale**: Quando un video o brano è attivo sul PC, i metadati e la timeline fluiscono verso il client mobile via porta 28471.
+2. **Notifica MediaStyle su Schermata di Blocco**: Il modulo nativo Android costruisce una notifica di sistema in stile player musicale con miniatura, titolo video, durata e barra di avanzamento.
+3. **Controllo Remoto Senza Sbloccare il Telefono**: L'utente può mettere in pausa, riprendere la riproduzione, saltare al secondo desiderato o cambiare il volume del PC direttamente dalla lockscreen.
+
+---
+
 ## 10. Regolamento di Manutenzione del Codice & Matrice Componenti
 
 > [!IMPORTANT]
@@ -424,12 +506,13 @@ sequenceDiagram
 | `crates/nexus-crypto` | Identità ED25519, chiavi e crittografia | Flusso 1, 7, 8 |
 | `crates/nexus-actor-system` | `EventBus`, canali pub/sub, `ActorSupervisor` | Tutti i flussi |
 | `crates/nexus-transport` | Server UDP, discovery mDNS, TCP loop | Flusso 1, 4, 8 |
-| `crates/nexus-plugin-media` | Router WebSocket porta 28471, Handoff e metadati | Flusso 1, 2, 3, 4 |
+| `crates/nexus-plugin-media` | Router WebSocket porta 28471, Handoff e metadati | Flusso 1, 2, 3, 4, 10 |
 | `crates/nexus-plugin-audio` | WASAPI Loopback, server 28472, Web Player Dual-Mode | Flusso 6 |
 | `crates/nexus-plugin-input` | Win32 SendInput, mouse delta, click, scroll, tastiera | Flusso 3, 4 |
 | `crates/nexus-plugin-clipboard` | Sincronizzazione appunti e parser intelligente | Flusso 7 |
 | `crates/nexus-plugin-proximity` | Monitoraggio distanza, motion state e LockWorkStation | Flusso 5 |
 | `crates/nexus-plugin-files` | File chunking, verifica integrità e storage | Flusso 8 |
+| `crates/nexus-plugin-notifications` | Listener Windows WinRT Toast e forwarding WebSocket | Flusso 9 |
 | `crates/nexus-ffi` | Bridge C-ABI DLL esportato per Flutter | Tutti i flussi |
 | `crates/nexus-daemon` | Processo demone standalone per background service | Tutti i flussi |
 | `apps/nexus_ui` | Applicazione Flutter per Windows, Android, Linux, macOS | Tutti i flussi |
@@ -447,13 +530,14 @@ sequenceDiagram
 | **5** | **Giroscopio / Puntatore Laser 3D** | 🟢 **100% Funzionante** | `test_gyro_laser_filter_smoothing` | Input sensori mobili con filtro Kalman integrato, puntatore laser e combinazione giroscopio + pressione prolungata tasto sinistro per selezione testo. |
 | **6** | **Universal Control & Topologia 2D** | 🟢 **100% Funzionante** | `universal_control_spatial_test` (Flutter) | Canvas grafico 2D con posizionamento monitor (Destra, Sinistra, Sopra, Sotto) e transizione continua mouse oltre i bordi schermo con coordinate normalizzate. |
 | **7** | **Auto-Determinazione Spaziale via BLE** | 🟢 **100% Funzionante** | `test_auto_determine_ble_arrangement` | Negoziazione automatica posizione fisica del dispositivo in base a prossimità Bluetooth Low Energy (<1.8m) ed ergonomia smartphone/laptop. |
-| **8** | **Proximity Motion & Walk-Away Lock** | 🟢 **100% Funzionante** | `test_e2e_proximity_kalman_filtering...` | Stima distanza con filtro Kalman su RSSI e tracking movimento. **Safety Lock Shield**: `NEXUS_ENABLE_REAL_SCREEN_LOCK=1` protegge l'account da disconnessioni durante test. |
+| **8** | **Proximity Motion, Single-Fire Alert & Walk-Away Lock** | 🟢 **100% Funzionante** | `test_e2e_proximity_kalman_filtering...` & `media_walkaway_handoff_test` | Stima distanza con filtro Kalman su RSSI e tracking movimento. **Anti-Spam Single-Fire Gate**: avviso allontanamento emesso 1 sola volta a >2.2m e resettato all'avvicinamento (<1.2m). **Safety Lock Shield**: `NEXUS_ENABLE_REAL_SCREEN_LOCK=1` protegge l'account da disconnessioni durante test. |
 | **9** | **Private Listening Audio Relay (WASAPI)** | 🟢 **100% Funzionante** | `audio_relay_e2e_test` & `nexus-plugin-audio` | Cattura loopback audio Windows kernel a 48kHz Stereo, streaming Dual-Mode (⚡ Real-time ~12ms via WebSocket binario e 💎 Hi-Fi Buffer via HTTP WAV). |
 | **10** | **Controllo Volume & Muto Sincronizzati** | 🟢 **100% Funzionante** | `test_volume_and_mute_control` | Slider volume fluido con drag reattivo, endpoint `/api/volume?v=...`, muto software cuffie (PCM scaling 0.0) e muto hardware casse PC via tasto multimediale. |
 | **11** | **Universal Clipboard Sync & Zero-Trust Gate** | 🟢 **100% Funzionante** | `clipboard_privacy_gate_e2e_test` & `nexus-plugin-clipboard` | Zero-Trust Privacy Gate con censura selettiva dei segreti (OTP, API key, carte, IBAN, CF, chiavi private), preservazione del contesto della frase, OS background watcher su Windows/macOS/Linux, container ambra 'Questo messaggio contiene dei segreti' e recupero E2EE on-demand tramite pulsante 'Rivela'. Sincronizzazione immediata dei contenuti sicuri. |
 | **12** | **File Transfer P2P Chunked & Resume** | 🟢 **100% Funzionante** | `file_transfer_resume_test` & `nexus-plugin-files` | Trasferimento file chunked (64KB) con verifica crittografica SHA-256, selettore nativo (Win32 OpenFileDialog / Android SAF), zero-mock all'avvio, e ripristino/recupero chunk mancanti su disconnessioni. |
-| **13** | **Centro Notifiche Multi-Dispositivo & Privacy Gate** | 🟢 **100% Funzionante** | `notification_privacy_gate_e2e_test` & `nexus-plugin-media` | Sincronizzazione notifiche bidirezionale Phone ↔ PC, censura automatica token sensibili (OTP 2FA, IBAN, API Key), box di sicurezza ambra, pulsante 'Rivela Notifica Completa' E2EE on-demand e filtro cronologia per dispositivo mittente. |
+| **13** | **OS Notification Mirroring & Centro Notifiche Multi-Dispositivo** | 🟢 **100% Funzionante** | `notification_privacy_gate_e2e_test` & `nexus-plugin-notifications` | Cattura Toast nativa Windows WinRT (`UserNotificationListener`), streaming WebSocket su porta 28471, categorizzazione rigida (`osNotification` vs `internalApp`), tab separate (Notifiche vs Sistema), palette colore fissa per dispositivo (`NexusDeviceColors`) con bordo 4px colorato e censura automatica token sensibili (OTP 2FA, IBAN, API Key). |
 | **14** | **Tastiera Remota, Macro & Digitazione Testo PC** | 🟢 **100% Funzionante** | `remote_keyboard_and_macro_test` & `nexus-plugin-input` | Iniezione tasti speciali (Esc, Tab, Ctrl, Alt, Win, Invio, Canc), scorciatoie macro (Ctrl+C, Ctrl+V, Ctrl+Z, Win+D, Alt+Tab) e modale digitazione remota testo Unicode da smartphone a PC via Win32 SendInput. |
 | **15** | **Topologia Spaziale Draggable (Schermi & Prossimità)** | 🟢 **100% Funzionante** | `spatial_topology_drag_test` & `nexus-plugin-input` | Canvas grafico con quadrati interattivi trascinabili (Computer e Telefono), zone di drop direzionali (Alto, Basso, Sinistra, Destra), swap rapido e spiegazione testuale in italiano del salto cursore. |
-| **16** | **Estensione Browser per Safari / Firefox Mobile** | 🟡 **In Sviluppo (Pianificato)** | — | L'estensione Chrome/Edge è completa e funzionante; il porting WebExtension per browser mobili terzi è previsto per milestone futura. |
-| **17** | **Relay Audio Multicanale 5.1 / 7.1 Surround** | ⚪ **Roadmap Futura** | — | Attualmente ottimizzato per Stereo PCM 48kHz ad altissima fedeltà e minima latenza (~12ms). Il supporto multicanale surround è programmato per Q4. |
+| **16** | **Notifica Lockscreen MediaStyle per Controllo Remoto PC** | 🟢 **100% Funzionante** | `remote_control_e2e_test` | Notifica Android persistente su schermata di blocco con controlli multimediali per playback PC (Play, Pausa, Riavvia, Timeline progressiva e controllo volume da remoto senza sbloccare il telefono). |
+| **17** | **Estensione Browser per Safari / Firefox Mobile** | 🟡 **In Sviluppo (Pianificato)** | — | L'estensione Chrome/Edge è completa e funzionante; il porting WebExtension per browser mobili terzi è previsto per milestone futura. |
+| **18** | **Relay Audio Multicanale 5.1 / 7.1 Surround** | ⚪ **Roadmap Futura** | — | Attualmente ottimizzato per Stereo PCM 48kHz ad altissima fedeltà e minima latenza (~12ms). Il supporto multicanale surround è programmato per Q4. |

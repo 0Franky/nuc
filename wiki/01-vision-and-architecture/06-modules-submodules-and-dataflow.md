@@ -17,21 +17,25 @@ nexus/
 │   ├── nexus-protocol/          <- Definizioni Protobuf, Serializzazione, Schemi di Rete
 │   ├── nexus-crypto/            <- Noise Protocol Framework (XX), Keystore Ed25519, SQLite TrustStore
 │   ├── nexus-actor-system/      <- Event Bus Tokio, Supervisione Attori, Canali MPSC / Broadcast
-│   ├── nexus-transport/         <- Iroh / QUIC Engine, mDNS Discovery, BLE Manager, Multi-Channel Router
+│   ├── nexus-transport/         <- UDP P2P Engine, mDNS Discovery, Multi-Channel Router
 │   │
-│   ├── nexus-plugin-media/      <- Sottomoduli: BrowserHook, NativeSMTC, NativeMPRIS, HandoffNegotiator
-│   ├── nexus-plugin-audio/      <- Sottomoduli: WASAPICapture, PipeWireCapture, OpusCodec, JitterEngine, BtSwitcher
-│   ├── nexus-plugin-input/      <- Sottomoduli: TouchpadHandler, GyroHandler, WinInput, UinputLinux, MacInput
-│   ├── nexus-plugin-clipboard/  <- Sottomoduli: ClipboardWatcher, SmartParser (OTP/URL/Hex), E2EEncryptor
-│   ├── nexus-plugin-files/      <- Sottomoduli: ChunkStreamer, ResumableReceiver, MmapIO
-│   ├── nexus-plugin-proximity/  <- Sottomoduli: BleRssiTracker, KalmanFilter, AutoLockEngine
-│   ├── nexus-wasm-host/         <- Runtime Extism/Wasmtime per plugin di terze parti
+│   ├── nexus-plugin-media/      <- Sottomoduli: session.rs, actor.rs (Auto-Pause, Handoff)
+│   ├── nexus-plugin-audio/      <- Sottomoduli: dsp/ (ring, jitter, resampler), capture/ (wasapi), volume/, web/ (player_html), actor.rs
+│   ├── nexus-plugin-input/      <- Sottomoduli: ballistics.rs, universal_control.rs, injector.rs, actor.rs
+│   ├── nexus-plugin-clipboard/  <- Sottomoduli: parser.rs (OTP/PII/Keys), loop_guard.rs, actor.rs (Zero-Trust Vault)
+│   ├── nexus-plugin-files/      <- Sottomoduli: models.rs, session.rs, actor.rs (BLAKE3 Chunking & Reassembly)
+│   ├── nexus-plugin-proximity/  <- Sottomoduli: kalman.rs (1D RSSI Filter), actor.rs (Auto-Lock Engine)
+│   ├── nexus-plugin-notifications/ <- Sottomoduli: actor.rs (WinRT UserNotificationListener), time_utils.rs
 │   │
 │   ├── nexus-daemon/            <- Entry-point binario Desktop (Headless background service / System Tray)
-│   └── nexus-ffi/               <- Binding flutter_rust_bridge v2 (Esportazione verso l'app Flutter)
+│   └── nexus-ffi/               <- C-ABI Native Bindings (state.rs, bindings.rs)
 │
 ├── apps/
-│   └── nexus_ui/                <- App Flutter unica (Desktop, Android, iOS)
+│   └── nexus_ui/                <- App Flutter (Desktop & Mobile)
+│       ├── lib/models/          <- Domain Models (device_colors, notification_model, secret_censor_model, models.dart)
+│       ├── lib/widgets/         <- Modular UI Widgets (media_quick_bar, remote_keyboard_modal, spatial_grid_painter)
+│       ├── lib/services/        <- Service Facades & Native Bridges (lan_sync_service, nexus_ffi_bridge)
+│       └── lib/screens/         <- Presentation Layer (notifications, touchpad, spatial_topology, dashboard)
 │
 └── extensions/
     └── nexus_browser_ext/       <- WebExtension (Chrome / Firefox / Edge / Safari)
