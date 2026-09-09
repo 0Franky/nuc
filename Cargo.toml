@@ -1,0 +1,87 @@
+[workspace]
+members = [
+    "crates/nexus-types",
+    "crates/nexus-protocol",
+    "crates/nexus-crypto",
+    "crates/nexus-actor-system",
+    "crates/nexus-transport",
+    "crates/nexus-plugin-media",
+    "crates/nexus-plugin-audio",
+    "crates/nexus-plugin-input",
+    "crates/nexus-plugin-clipboard",
+    "crates/nexus-plugin-proximity",
+    "crates/nexus-plugin-files",
+    "crates/nexus-plugin-notifications",
+    "crates/nexus-daemon",
+    "crates/nexus-ffi",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Nexus Team"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Async Runtime & Utilities
+tokio = { version = "1.38", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# Serialization & Protocols
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+bytes = "1.6"
+regex = "1.10"
+lazy_static = "1.5"
+
+# Cryptography & Security
+ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+blake3 = "1.5"
+rand = "0.8"
+
+# Networking & P2P
+quinn = "0.11"
+rcgen = "0.13"
+rustls = "0.23"
+mdns-sd = "0.11"
+socket2 = "0.5"
+tokio-tungstenite = "0.23"
+futures-util = "0.3"
+
+# Tracing & Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1.0"
+anyhow = "1.0"
+uuid = { version = "1.8", features = ["v4", "serde"] }
+
+# OS Platform Bindings (Windows)
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Shutdown", "Win32_System_DataExchange", "Win32_System_Memory"] }
+
+# Internal workspace crates
+nexus-types = { path = "crates/nexus-types" }
+nexus-protocol = { path = "crates/nexus-protocol" }
+nexus-crypto = { path = "crates/nexus-crypto" }
+nexus-actor-system = { path = "crates/nexus-actor-system" }
+nexus-transport = { path = "crates/nexus-transport" }
+nexus-plugin-media = { path = "crates/nexus-plugin-media" }
+nexus-plugin-audio = { path = "crates/nexus-plugin-audio" }
+nexus-plugin-input = { path = "crates/nexus-plugin-input" }
+nexus-plugin-clipboard = { path = "crates/nexus-plugin-clipboard" }
+nexus-plugin-proximity = { path = "crates/nexus-plugin-proximity" }
+nexus-plugin-files = { path = "crates/nexus-plugin-files" }
+nexus-plugin-notifications = { path = "crates/nexus-plugin-notifications" }
+nexus-daemon = { path = "crates/nexus-daemon" }
+nexus-ffi = { path = "crates/nexus-ffi" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

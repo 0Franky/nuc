@@ -1,0 +1,27 @@
+[package]
+name = "nexus-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nexus-daemon"
+path = "src/main.rs"
+
+[dependencies]
+nexus-types = { workspace = true }
+nexus-protocol = { workspace = true }
+nexus-crypto = { workspace = true }
+nexus-actor-system = { workspace = true }
+nexus-transport = { workspace = true }
+nexus-plugin-media = { workspace = true }
+nexus-plugin-audio = { workspace = true }
+nexus-plugin-input = { workspace = true }
+nexus-plugin-clipboard = { workspace = true }
+nexus-plugin-proximity = { workspace = true }
+nexus-plugin-files = { workspace = true }
+nexus-plugin-notifications = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

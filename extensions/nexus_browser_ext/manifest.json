@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "Nexus Universal Continuity",
+  "version": "1.0.0",
+  "description": "Seamless video and media continuity across devices for YouTube and web players.",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "storage",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "*://*/*",
+    "http://*/*",
+    "https://*/*",
+    "*://*.youtube.com/*",
+    "*://youtube.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Nexus Universal Continuity",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>",
+        "*://*/*",
+        "http://*/*",
+        "https://*/*",
+        "*://*.youtube.com/*",
+        "*://youtube.com/*"
+      ],
+      "js": ["content_script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

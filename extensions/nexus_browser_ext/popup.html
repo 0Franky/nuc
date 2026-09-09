@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nexus Universal Continuity</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      width: 350px;
+      background-color: #0F172A;
+      color: #F8FAFC;
+      padding: 16px;
+      user-select: none;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 12px;
+      margin-bottom: 14px;
+    }
+
+    .logo-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: rgba(99, 102, 241, 0.2);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      color: #818CF8;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 900;
+    }
+
+    .title-box h1 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #FFFFFF;
+    }
+
+    .title-box p {
+      font-size: 11px;
+      color: #94A3B8;
+    }
+
+    .version-tag {
+      font-size: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #94A3B8;
+      font-weight: 600;
+    }
+
+    /* Status Card */
+    .status-card {
+      background: #1E293B;
+      border-radius: 12px;
+      padding: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      margin-bottom: 12px;
+      transition: all 0.2s ease;
+    }
+
+    .status-card.connected {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: linear-gradient(180deg, rgba(16, 185, 129, 0.08) 0%, #1E293B 100%);
+    }
+
+    .status-card.failed {
+      border-color: rgba(239, 68, 68, 0.4);
+      background: linear-gradient(180deg, rgba(239, 68, 68, 0.08) 0%, #1E293B 100%);
+    }
+
+    .status-card.retrying {
+      border-color: rgba(245, 158, 11, 0.4);
+      background: linear-gradient(180deg, rgba(245, 158, 11, 0.08) 0%, #1E293B 100%);
+    }
+
+    .status-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .dot.connected { background: #10B981; box-shadow: 0 0 8px #10B981; }
+    .dot.connecting { background: #6366F1; animation: pulse 1s infinite; }
+    .dot.retrying { background: #F59E0B; animation: pulse 1s infinite; }
+    .dot.failed { background: #EF4444; box-shadow: 0 0 8px #EF4444; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.2); }
+    }
+
+    .status-desc {
+      font-size: 11px;
+      color: #94A3B8;
+      line-height: 1.4;
+    }
+
+    /* Action Buttons */
+    .reconnect-btn {
+      width: 100%;
+      background: #6366F1;
+      color: #FFFFFF;
+      border: none;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.15s ease, transform 0.05s ease;
+      margin-top: 10px;
+    }
+
+    .reconnect-btn:hover {
+      background: #4F46E5;
+    }
+
+    .reconnect-btn:active {
+      transform: scale(0.98);
+    }
+
+    .reconnect-btn.loading {
+      opacity: 0.7;
+      pointer-events: none;
+    }
+
+    /* Media Box */
+    .media-card {
+      background: #1E293B;
+      border-radius: 12px;
+      padding: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      margin-bottom: 12px;
+    }
+
+    .media-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #FFFFFF;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 4px;
+    }
+
+    .media-meta {
+      font-size: 11px;
+      color: #94A3B8;
+      margin-top: 2px;
+    }
+
+    /* Help Notice */
+    .help-box {
+      font-size: 10.5px;
+      color: #64748B;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px dashed rgba(255, 255, 255, 0.1);
+      padding: 10px;
+      border-radius: 8px;
+      line-height: 1.35;
+    }
+
+    .help-box strong {
+      color: #CBD5E1;
+    }
+
+    .spin {
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo-box">
+      <div class="logo-icon">∞</div>
+      <div class="title-box">
+        <h1>Nexus Continuity</h1>
+        <p>Estensione Browser Live</p>
+      </div>
+    </div>
+    <div class="version-tag">v1.0.0</div>
+  </div>
+
+  <!-- Status Card -->
+  <div id="statusCard" class="status-card">
+    <div class="status-header">
+      <div class="status-badge">
+        <div id="statusDot" class="dot connecting"></div>
+        <span id="statusLabel">Controllo stato...</span>
+      </div>
+      <span id="portBadge" style="font-size: 10px; color: #64748B; font-family: monospace;">PORT 28471</span>
+    </div>
+    <p id="statusDesc" class="status-desc">Inizializzazione connessione WebSocket con il demone locale.</p>
+    
+    <button id="reconnectBtn" class="reconnect-btn">
+      <span id="btnIcon">🔄</span>
+      <span id="btnText">Riconnetti Ora</span>
+    </button>
+  </div>
+
+  <!-- Media Playback Monitor -->
+  <div class="media-card">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <span style="font-size: 10px; font-weight: 700; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.5px;">Monitoraggio Tab</span>
+      <span id="mediaLiveIndicator" style="font-size: 10px; color: #10B981; display: none;">● LIVE</span>
+    </div>
+    <div id="mediaTitle" class="media-title">Nessun video rilevato</div>
+    <div id="mediaMeta" class="media-meta">Apri un video su YouTube per la sincronizzazione continua.</div>
+  </div>
+
+  <!-- Help info box -->
+  <div class="help-box">
+    💡 <strong>Demone Offline?</strong> Assicurati di aver avviato l'applicazione <strong>nexus_ui.exe</strong> o <strong>nexus-daemon.exe</strong> sul tuo PC, quindi clicca su <em>"Riconnetti Ora"</em>.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

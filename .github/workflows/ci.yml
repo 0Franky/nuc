@@ -1,0 +1,66 @@
+name: Nexus Continuity Continuous Integration
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-rust-core:
+    name: Rust Test Suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Cargo Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Cargo Tests (All Workspace Crates)
+        run: cargo test --workspace --verbose
+
+      - name: Build Release Binaries
+        run: cargo build --workspace --release
+
+  test-flutter-ui:
+    name: Flutter UI Client Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install Dependencies
+        working-directory: ./apps/nexus_ui
+        run: flutter pub get
+
+      - name: Analyze Flutter Code
+        working-directory: ./apps/nexus_ui
+        run: flutter analyze
+
+      - name: Run Widget Tests
+        working-directory: ./apps/nexus_ui
+        run: flutter test

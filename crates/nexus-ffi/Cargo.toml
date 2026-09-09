@@ -1,0 +1,28 @@
+[package]
+name = "nexus-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+nexus-types = { workspace = true }
+nexus-protocol = { workspace = true }
+nexus-crypto = { workspace = true }
+nexus-actor-system = { workspace = true }
+nexus-transport = { workspace = true }
+nexus-plugin-media = { workspace = true }
+nexus-plugin-audio = { workspace = true }
+nexus-plugin-input = { workspace = true }
+nexus-plugin-clipboard = { workspace = true }
+nexus-plugin-proximity = { workspace = true }
+nexus-plugin-files = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+lazy_static = { workspace = true }
+uuid = { workspace = true }

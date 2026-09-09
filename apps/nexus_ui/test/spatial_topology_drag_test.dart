@@ -1,0 +1,74 @@
+// ignore_for_file: avoid_print
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus_ui/main.dart';
+import 'package:nexus_ui/services/lan_sync_service.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('Spatial Topology Draggable Squares & Universal Control Tests', () {
+    setUp(() {
+      LanSyncService.instance.spatialPosition = "Right";
+      LanSyncService.instance.bleSpatialAutoDetect = false;
+    });
+
+    testWidgets('1. Renders PC Principale and Telefono (Tu) on canvas', (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: SpatialTopologyScreen(),
+      ));
+      await tester.pumpAndSettle();
+
+      // Verify Computer square and Telefono square are displayed
+      expect(find.text('PC Principale'), findsOneWidget);
+      expect(find.text('Telefono (Tu)'), findsOneWidget);
+
+      // Verify explanatory text for Right position
+      expect(
+        find.textContaining('bordo DESTRO del PC'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('2. Swapping position updates spatial topology to Left', (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: SpatialTopologyScreen(),
+      ));
+      await tester.pumpAndSettle();
+
+      // Find the swap button
+      final swapButton = find.byTooltip('Inverti Sinistra / Destra');
+      expect(swapButton, findsOneWidget);
+
+      await tester.tap(swapButton);
+      await tester.pumpAndSettle();
+
+      // Verified updated orientation
+      expect(
+        find.textContaining('bordo SINISTRO del PC'),
+        findsOneWidget,
+      );
+      expect(LanSyncService.instance.spatialPosition.toLowerCase(), 'left');
+    });
+
+    testWidgets('3. Drop target or direct selection updates to Above / Below', (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: SpatialTopologyScreen(),
+      ));
+      await tester.pumpAndSettle();
+
+      // Tap on the 'In Alto' chip
+      final aboveTarget = find.textContaining('In Alto').first;
+      expect(aboveTarget, findsOneWidget);
+
+      await tester.tap(aboveTarget);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('bordo SUPERIORE del PC'),
+        findsOneWidget,
+      );
+      expect(LanSyncService.instance.spatialPosition.toLowerCase(), 'above');
+    });
+  });
+}

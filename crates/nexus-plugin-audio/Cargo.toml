@@ -1,0 +1,27 @@
+[package]
+name = "nexus-plugin-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexus-types = { workspace = true }
+nexus-protocol = { workspace = true }
+nexus-actor-system = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+sha1 = "0.10"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.17"
+windows = { version = "0.58", features = ["Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_Com"] }
+windows-sys = { workspace = true }

@@ -1,0 +1,21 @@
+[package]
+name = "nexus-plugin-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexus-types = { workspace = true }
+nexus-protocol = { workspace = true }
+nexus-actor-system = { workspace = true }
+nexus-plugin-input = { workspace = true }
+nexus-plugin-proximity = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }

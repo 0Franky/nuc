@@ -1,0 +1,22 @@
+[package]
+name = "nexus-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexus-types = { workspace = true }
+nexus-protocol = { workspace = true }
+nexus-crypto = { workspace = true }
+nexus-actor-system = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+socket2 = { workspace = true }
+bytes = { workspace = true }
+mdns-sd = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+uuid = { workspace = true }
