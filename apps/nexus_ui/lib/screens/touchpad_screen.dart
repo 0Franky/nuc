@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
+import '../widgets/media_quick_bar.dart';
+import '../widgets/remote_keyboard_modal.dart';
 
 class TouchpadRemoteScreen extends StatefulWidget {
   const TouchpadRemoteScreen({super.key});
@@ -497,59 +499,7 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
           ),
 
           // Bottom Quick Media & Volume Controls
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: NexusTheme.surfaceSecondary,
-              border: Border(top: BorderSide(color: NexusTheme.borderSubtle)),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                IconButton.filledTonal(
-                  style: IconButton.styleFrom(backgroundColor: NexusTheme.surfaceCard),
-                  onPressed: () => NexusFfiBridge.instance.sendMediaControl("SEEK", positionMs: 0),
-                  icon: const Icon(Icons.skip_previous_rounded),
-                  tooltip: 'Ricomincia Video',
-                ),
-                IconButton.filled(
-                  style: IconButton.styleFrom(backgroundColor: NexusTheme.accentIndigo),
-                  onPressed: () {
-                    NexusFfiBridge.instance.sendMediaControl("PAUSE");
-                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('⏸️ Comando PAUSA inviato al PC'), duration: Duration(milliseconds: 600)),
-                    );
-                  },
-                  icon: const Icon(Icons.pause_rounded, size: 26),
-                  tooltip: 'Pausa PC',
-                ),
-                IconButton.filled(
-                  style: IconButton.styleFrom(backgroundColor: NexusTheme.successGreen),
-                  onPressed: () {
-                    NexusFfiBridge.instance.sendMediaControl("PLAY");
-                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('▶️ Comando PLAY inviato al PC'), duration: Duration(milliseconds: 600)),
-                    );
-                  },
-                  icon: const Icon(Icons.play_arrow_rounded, size: 26),
-                  tooltip: 'Riprendi PC',
-                ),
-                const SizedBox(width: 12),
-                IconButton.filledTonal(
-                  style: IconButton.styleFrom(backgroundColor: NexusTheme.surfaceCard),
-                  onPressed: () => NexusFfiBridge.instance.setMasterVolume(0.5),
-                  icon: const Icon(Icons.volume_down_rounded),
-                ),
-                IconButton.filledTonal(
-                  style: IconButton.styleFrom(backgroundColor: NexusTheme.surfaceCard),
-                  onPressed: () => NexusFfiBridge.instance.setMasterVolume(0.9),
-                  icon: const Icon(Icons.volume_up_rounded),
-                ),
-              ],
-            ),
-          ),
+          const MediaQuickBar(),
         ],
       ),
     );
@@ -571,7 +521,7 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
       onPressed: () {
         HapticFeedback.lightImpact();
         if (label == '⌨️') {
-          _openRemoteKeyboardModal();
+          RemoteKeyboardModal.show(context);
         } else if (isModifier) {
           setState(() {
             if (label == 'Ctrl') {
@@ -605,169 +555,6 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
           color: isActive ? Colors.white : NexusTheme.textSecondary,
         ),
       ),
-    );
-  }
-
-  void _openRemoteKeyboardModal() {
-    final textCtrl = TextEditingController();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: NexusTheme.surfaceCard,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 16,
-          bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.keyboard_rounded, color: NexusTheme.accentIndigo, size: 22),
-                const SizedBox(width: 8),
-                const Text(
-                  'Tastiera Remota & Macro PC',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                ),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close_rounded, size: 20, color: NexusTheme.textSecondary),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Digita o incolla testo da inviare direttamente alla finestra attiva del computer:',
-              style: TextStyle(color: NexusTheme.textSecondary, fontSize: 11),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: textCtrl,
-                    autofocus: true,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      hintText: 'Scrivi qui il testo da inviare al PC...',
-                      hintStyle: const TextStyle(color: NexusTheme.textTertiary, fontSize: 12),
-                      filled: true,
-                      fillColor: NexusTheme.background,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        borderSide: BorderSide(color: NexusTheme.borderCard),
-                      ),
-                    ),
-                    onSubmitted: (text) {
-                      if (text.isNotEmpty) {
-                        NexusFfiBridge.instance.sendTextInput(text);
-                        textCtrl.clear();
-                        Navigator.pop(ctx);
-                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('⌨️ Testo digitato su PC: $text'), duration: const Duration(seconds: 2)),
-                        );
-                      }
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
-                  onPressed: () {
-                    final text = textCtrl.text;
-                    if (text.isNotEmpty) {
-                      NexusFfiBridge.instance.sendTextInput(text);
-                      textCtrl.clear();
-                      Navigator.pop(ctx);
-                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('⌨️ Testo digitato su PC: $text'), duration: const Duration(seconds: 2)),
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.send_rounded, size: 16),
-                  label: const Text('Invia'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: NexusTheme.accentIndigo,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            const Text('Macro Rapide & Scorciatoie:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: NexusTheme.textSecondary)),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _buildMacroChip('Ctrl + C', ['Control', 'C'], 'Copia'),
-                _buildMacroChip('Ctrl + V', ['Control', 'V'], 'Incolla'),
-                _buildMacroChip('Ctrl + Z', ['Control', 'Z'], 'Annulla'),
-                _buildMacroChip('Win + D', ['Win', 'D'], 'Desktop'),
-                _buildMacroChip('Alt + Tab', ['Alt', 'Tab'], 'Cambia App'),
-                _buildSingleKeyChip('Invio ↵', 'Enter'),
-                _buildSingleKeyChip('Backspace ⌫', 'Backspace'),
-                _buildSingleKeyChip('Canc ⌦', 'Delete'),
-                _buildSingleKeyChip('Spazio ␣', 'Space'),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMacroChip(String label, List<String> combo, String tooltip) {
-    return ActionChip(
-      backgroundColor: NexusTheme.accentIndigoMuted,
-      side: BorderSide(color: NexusTheme.accentIndigo.withAlpha(120), width: 0.8),
-      avatar: const Icon(Icons.flash_on_rounded, size: 14, color: Color(0xFF818CF8)),
-      label: Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
-      tooltip: tooltip,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NexusTheme.radiusPill)),
-      onPressed: () {
-        HapticFeedback.lightImpact();
-        NexusFfiBridge.instance.sendKeyboardCombo(combo);
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('⚡ Macro eseguita: $label ($tooltip)'),
-            duration: const Duration(milliseconds: 700),
-            backgroundColor: NexusTheme.accentIndigo,
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildSingleKeyChip(String label, String key) {
-    return ActionChip(
-      backgroundColor: NexusTheme.surfaceSecondary,
-      side: BorderSide(color: NexusTheme.borderCard, width: 0.8),
-      label: Text(label, style: const TextStyle(fontSize: 11, color: NexusTheme.textPrimary)),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NexusTheme.radiusPill)),
-      onPressed: () {
-        HapticFeedback.lightImpact();
-        NexusFfiBridge.instance.sendKeyboardKey(key);
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('⌨️ Tasto $label inviato'),
-            duration: const Duration(milliseconds: 600),
-            backgroundColor: NexusTheme.accentIndigo,
-          ),
-        );
-      },
     );
   }
 }

@@ -1,4 +1,4 @@
-﻿# Rust / Cargo
+# Rust / Cargo
 /target/
 
 # Logs and runtime artifacts
@@ -16,7 +16,7 @@ daemon_stderr.log
 *.pdb
 
 # Distribution and packaging
-/dist/
+**/dist/
 *.apk
 *.aab
 

@@ -6,6 +6,7 @@ import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
 import '../widgets/nexus_pill.dart';
 import '../widgets/nexus_button.dart';
+import '../widgets/spatial_grid_painter.dart';
 
 class SpatialTopologyScreen extends StatefulWidget {
   const SpatialTopologyScreen({super.key});
@@ -661,7 +662,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
               // Grid background lines for spatial orientation
               CustomPaint(
                 size: Size(constraints.maxWidth, constraints.maxHeight),
-                painter: _GridPainter(),
+                painter: const SpatialGridPainter(),
               ),
 
               // PC Node (Fixed in Center)
@@ -711,7 +712,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
               // Connection line from PC center to Phone
               CustomPaint(
                 size: Size(constraints.maxWidth, constraints.maxHeight),
-                painter: _LinePainter(
+                painter: SpatialLinePainter(
                   start: Offset(centerX, centerY),
                   end: Offset(centerX + selfOffset.dx, centerY + selfOffset.dy),
                   color: const Color(0xFF10B981).withAlpha(120),
@@ -849,52 +850,4 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
       ),
     );
   }
-}
-
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withAlpha(12)
-      ..strokeWidth = 1.0;
-
-    const step = 28.0;
-    for (double x = 0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-
-    final axisPaint = Paint()
-      ..color = const Color(0xFF6366F1).withAlpha(35)
-      ..strokeWidth = 1.2;
-    canvas.drawLine(Offset(size.width / 2, 0), Offset(size.width / 2, size.height), axisPaint);
-    canvas.drawLine(Offset(0, size.height / 2), Offset(size.width, size.height / 2), axisPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _LinePainter extends CustomPainter {
-  final Offset start;
-  final Offset end;
-  final Color color;
-
-  _LinePainter({required this.start, required this.end, required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 2.0
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawLine(start, end, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _LinePainter oldDelegate) =>
-      oldDelegate.start != start || oldDelegate.end != end || oldDelegate.color != color;
 }

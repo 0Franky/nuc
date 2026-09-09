@@ -298,7 +298,7 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
               controller: _manualPathCtrl,
               decoration: InputDecoration(
                 labelText: 'Percorso File',
-                hintText: 'Es: C:\\Users\\...\\documento.pdf',
+                hintText: 'Es: C:\\Documenti\\file.pdf',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
               ),
             ),
