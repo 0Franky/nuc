@@ -5,7 +5,6 @@ import 'package:sensors_plus/sensors_plus.dart';
 import '../services/lan_sync_service.dart';
 import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
-import '../widgets/media_quick_bar.dart';
 import '../widgets/remote_keyboard_modal.dart';
 import '../widgets/target_device_selector.dart';
 
@@ -513,9 +512,6 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
               ),
             ),
           ),
-
-          // Bottom Quick Media & Volume Controls
-          const MediaQuickBar(),
         ],
       ),
     );

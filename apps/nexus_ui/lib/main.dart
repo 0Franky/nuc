@@ -29,6 +29,7 @@ export 'widgets/nexus_button.dart';
 export 'widgets/nexus_segmented_control.dart';
 export 'widgets/nexus_media_card.dart';
 export 'widgets/nexus_audio_card.dart';
+export 'widgets/nexus_continuity_island.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();

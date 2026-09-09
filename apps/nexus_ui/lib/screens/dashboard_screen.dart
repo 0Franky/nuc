@@ -9,8 +9,8 @@ import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
 import '../widgets/nexus_pill.dart';
-import '../widgets/nexus_media_card.dart';
-import '../widgets/nexus_audio_card.dart';
+import '../widgets/target_device_selector.dart';
+import '../widgets/nexus_continuity_island.dart';
 import 'notification_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -264,28 +264,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
       body: ListView(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         children: [
-          // 1. Status Capsule Banner
-          NexusCard(
-            title: isMobile
-                ? (isConnected ? 'Connesso al PC ($localIp)' : 'Ricerca PC su Rete LAN...')
-                : 'Nexus Core Attivo (IP: $localIp)',
-            subtitle: isMobile
-                ? 'Latenza socket ~2ms • E2EE ChaCha20-Poly1305'
-                : 'In ascolto su 0.0.0.0:28471 • Canale P2P E2EE Pronto',
-            icon: isConnected ? Icons.wifi_rounded : Icons.wifi_find_rounded,
-            iconColor: isConnected ? NexusTheme.successGreen : NexusTheme.accentIndigo,
-            trailing: NexusPill(
-              label: isConnected ? 'Online' : 'Discovery',
-              style: isConnected ? NexusPillStyle.success : NexusPillStyle.accent,
-              showDot: true,
-            ),
+          // 1. LIVELLO 1: Persistent Target Device Selector (SSOT Globale di Sistema)
+          const TargetDeviceSelector(
+            compact: false,
+            title: 'Dispositivo Target Attivo',
+          ),
+          const SizedBox(height: 14),
+
+          // 2. LIVELLO 2: Active Continuity Island (Media, Volume SSOT & Audio Relay unificati)
+          NexusContinuityIsland(
+            activeMedia: activeMedia,
+            audioRelayActive: audioRelayActive,
+            initialVolume: volume,
+            onStateChanged: _fetchState,
           ),
           const SizedBox(height: 16),
 
-          // 2. Continuity Quick Glance Tiles (Control Center Grid)
+          // 3. LIVELLO 3: Continuity Workspace & Accesso Rapido (Ergonomic Grid)
           const Text(
-            'Moduli di Continuità & Accesso Rapido',
-            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: NexusTheme.textSecondary),
+            'Moduli di Continuità & Controllo Remoto',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: NexusTheme.textSecondary),
           ),
           const SizedBox(height: 8),
           LayoutBuilder(
@@ -300,6 +298,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 childAspectRatio: 1.5,
                 children: [
                   _buildQuickTile(
+                    title: 'Magic Trackpad',
+                    subtitle: 'Multi-touch & Tastiera',
+                    icon: Icons.touch_app_rounded,
+                    color: Colors.tealAccent,
+                    onTap: () => widget.onNavigateTab?.call(4),
+                  ),
+                  _buildQuickTile(
+                    title: 'File Drop (P2P)',
+                    subtitle: 'BLAKE3 • Chunk 64KB',
+                    icon: Icons.folder_shared_rounded,
+                    color: Colors.orangeAccent,
+                    onTap: () => widget.onNavigateTab?.call(3),
+                  ),
+                  _buildQuickTile(
+                    title: 'Appunti E2EE',
+                    subtitle: LanSyncService.instance.clipboardPrivacyGate ? 'Zero-Trust Attivo' : 'Sincronizzazione Diretta',
+                    icon: Icons.content_paste_rounded,
+                    color: Colors.purpleAccent,
+                    onTap: () => widget.onNavigateTab?.call(5),
+                  ),
+                  _buildQuickTile(
                     title: 'Schermi & Prossimità',
                     subtitle: !LanSyncService.instance.isBleHardwareAvailable
                         ? '${LanSyncService.instance.spatialPosition} • Bluetooth OFF'
@@ -310,47 +329,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     color: Colors.blueAccent,
                     onTap: () => widget.onNavigateTab?.call(2),
                   ),
-                  _buildQuickTile(
-                    title: 'File Drop (P2P)',
-                    subtitle: 'BLAKE3 • Chunk 64KB',
-                    icon: Icons.folder_shared_rounded,
-                    color: Colors.orangeAccent,
-                    onTap: () => widget.onNavigateTab?.call(3),
-                  ),
-                  _buildQuickTile(
-                    title: 'Magic Trackpad',
-                    subtitle: 'Multi-touch & Tastiera',
-                    icon: Icons.touch_app_rounded,
-                    color: Colors.tealAccent,
-                    onTap: () => widget.onNavigateTab?.call(4),
-                  ),
-                  _buildQuickTile(
-                    title: 'Appunti E2EE',
-                    subtitle: LanSyncService.instance.clipboardPrivacyGate ? 'Zero-Trust Attivo' : 'Sincronizzazione Diretta',
-                    icon: Icons.content_paste_rounded,
-                    color: Colors.purpleAccent,
-                    onTap: () => widget.onNavigateTab?.call(5),
-                  ),
                 ],
               );
             },
           ),
           const SizedBox(height: 16),
 
-          // 3. Now Playing (Unified Component)
-          if (activeMedia != null) ...[
-            NexusMediaCard(media: activeMedia),
-            const SizedBox(height: 16),
-          ],
-
-          // 4. Audio Relay (Unified Component)
-          NexusAudioCard(
-            audioRelayActive: audioRelayActive,
-            initialVolume: volume,
-          ),
-          const SizedBox(height: 16),
-
-          // 5. Discovered Peers (Apple Inset List)
+          // 4. Discovered Peers (Apple Inset List)
           _buildPeersSection(peers),
         ],
       ),

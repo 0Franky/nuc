@@ -16,7 +16,10 @@ void main() {
     expect(find.text('Appunti'), findsOneWidget);
     expect(find.text('Impostazioni'), findsOneWidget);
 
-    // Verify Private Listening exists
-    expect(find.text('Private Listening (Audio Relay)'), findsOneWidget);
+    // Verify Level 1 Target Device Selector exists
+    expect(find.text('DISPOSITIVO TARGET ATTIVO'), findsOneWidget);
+
+    // Verify Level 2 Unified Continuity Island exists
+    expect(find.text('Ascolto Privato (28472)'), findsOneWidget);
   });
 }
