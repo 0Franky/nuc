@@ -64,3 +64,25 @@ stateDiagram-v2
 2. **Fase di Risveglio**: Quando l'utente sblocca il telefono o si avvicina alla postazione, un pacchetto BLE riattiva istantaneamente il socket QUIC su Wi-Fi (latenza di riattivazione < 50ms).
 3. **Modalità Senza Rete (Off-Grid)**: Se l'utente è in treno o in hotel senza Wi-Fi condiviso, i nodi negoziano via BLE l'apertura di un hotspot **Wi-Fi Direct / Apple Multipeer**, consentendo la condivisione file e la continuità video anche senza connessione internet.
 4. **Turbo USB**: Se lo smartphone viene collegato via cavo al PC per ricarica, il daemon rileva la porta locale (via ADB / WinUSB / Usbmuxd) e commuta automaticamente lo streaming fotocamera 4K su cavo, azzerando completamente la latenza di rete e liberando banda radio.
+
+---
+
+## 🎯 4. Multi-Target Routing & Disambiguazione Nomi Dispositivo
+
+Nelle configurazioni multi-postazione contemporanee (es. 2 PC desktop/laptop e 1 smartphone collegati alla stessa LAN):
+
+### 4.1 Suffisso Variabile Automatico & Identità
+Per prevenire conflitti di denominazione tra istanze multiple dello stesso sistema operativo (es. due nodi denominati `PC Windows`), Nexus adotta una regola di naming deterministica:
+- All'avvio, viene generato o caricato dalle preferenze persistenti un `deviceId` univoco.
+- Dal `deviceId` viene derivato un suffisso esadecimale a 4 caratteri (es. `PC Windows-A1B2`, `PC Windows-4F9C`).
+- Nelle impostazioni (`SettingsScreen`), l'utente può personalizzare il nome visualizzato o ripristinare il valore predefinito.
+
+### 4.2 Topologia Multi-Socket e Selezione Target al Volo
+- **Architettura Multi-Socket**: `LanSyncService` mantiene una mappa di connessioni WebSocket attive (`_peerSockets: Map<String, WebSocket>`) verso tutti i PC e nodi rilevati sulla LAN.
+- **Selettore `TargetDeviceSelector`**: Nelle schermate che richiedono un destinatario esatto (Trackpad, Tastiera Remota, Invio File, Ascolto Audio Privato), viene esposto un chip bar orizzontale reattivo con i colori distintivi del dispositivo (`NexusDeviceColors`).
+- **Commutazione Istantanea**: L'utente può cambiare target al volo (es. inviare movimenti trackpad al PC 1 e, con un singolo tap, passare a pilotare il PC 2) senza disconnessioni di rete né perdite di stato.
+- **Tassonomia di Instradamento**:
+  - **Puntuale (Target Obbligatorio)**: Trackpad, Tastiera, P2P File Transfer, Audio Relay Stream.
+  - **Globale (Broadcast)**: Discovery mDNS, Presenza BLE, Notifiche Toast di sistema.
+  - **Ibrida**: Media Handoff video, Universal Clipboard sicura, Controlli Volume.
+

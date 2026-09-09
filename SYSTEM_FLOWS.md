@@ -81,6 +81,22 @@ graph TD
 | **42420** | `UDP / Binary Packet` | `nexus-transport` | Comunicazione crittografata P2P a bassa latenza e streaming file chunking. |
 | **5353** | `UDP / mDNS` | `nexus-transport` (`mdns-sd`) | Zero-Configuration Discovery dei nodi nella LAN (`_nexus._udp.local.`). |
 
+### 🎯 Tassonomia di Instradamento Flussi: Dispositivo Target vs Broadcast vs Ibrido
+
+Nello scenario multi-dispositivo tipico (es. 2 PC e 1 Smartphone connessi simultaneamente sulla stessa LAN), i flussi di rete si dividono in tre categorie operative rigide:
+
+| Categoria Flusso | Tipologia Instradamento | Flussi Nexus Coinvolti | Comportamento & Selezione Target |
+| :--- | :--- | :--- | :--- |
+| **Puntuale (Target Esatto Obbligatorio)** | **Unicast Mirato** (`targetPeerId`) | **Trackpad / Mouse Remoto**, **Tastiera Remota & Macro**, **File Transfer P2P**, **Audio Stream Relay** (Private Listening) | Richiede un target esplicito. Da smartphone o secondo PC, l'utente seleziona istantaneamente il PC destinatario tramite il selettore `TargetDeviceSelector` orizzontale in tempo reale (on-the-fly switching senza riavvio o disconnessione). I segnali di input e file vengono recapitati solo al socket dedicato del dispositivo selezionato. |
+| **Globale (Broadcast Naturale)** | **Omnicast / Fan-out** (Nessun Target) | **Discovery mDNS/UDP**, **Heartbeat & Ping LAN**, **Presenza BLE Proximity**, **OS Notification Mirroring** (Toast PC) | Non richiede selezione target. I pacchetti di presenza e le notifiche di sistema Toast del PC vengono propagate a tutti i peer accoppiati/ascoltatori registrati per mantenere la sincronizzazione dello stato globale. |
+| **Ibrida (Contestuale)** | **Selettivo o All-Devices** | **Media Continuity & Handoff Video**, **Universal Clipboard**, **Controllo Volume / Media Player** | **Handoff Video**: l'utente può scegliere a quale PC passare la riproduzione o riceverla.<br/>**Clipboard**: gli appunti sicuri possono propagarsi in broadcast o essere inviati su richiesta a un solo peer.<br/>**Volume / Playback**: controlla il media attivo del PC attualmente focalizzato o selezionato dall'utente. |
+
+### 🏷️ Identità Dispositivo e Risoluzione Collisioni Nomi
+Per garantire la distinzione immediata tra dispositivi dello stesso tipo (es. due workstation Windows denominate `PC Windows` o due telefoni Android):
+1. **Suffisso Variabile Automatico**: Ogni dispositivo genera un hash/seed persistente (UUID o SHA-256) salvato nelle preferenze locali (`SharedPreferences`), estraendo un suffisso esadecimale a 4 caratteri (es. `PC Windows-A1B2`, `PC Windows-4F9C`, `Android-7E21`).
+2. **Personalizzazione Utente**: Dalle impostazioni (`SettingsScreen -> Identità Dispositivo`), l'utente può rinominare liberamente il dispositivo con persistenza locale e broadcast istantaneo del nuovo nome ai peer.
+3. **Pulsante Ripristina**: Consente in qualsiasi momento di ripristinare il nome standard generato con suffisso identificativo univoco.
+
 ---
 
 ## Flusso 1: Discovery, Handshake & Pairing mDNS/WebSocket

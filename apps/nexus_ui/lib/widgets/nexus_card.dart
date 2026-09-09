@@ -42,10 +42,12 @@ class NexusCard extends StatelessWidget {
         border: border,
         radius: borderRadius,
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
+      child: Material(
+        type: MaterialType.transparency,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
           if (hasHeader) ...[
             Row(
               children: [
@@ -101,6 +103,7 @@ class NexusCard extends StatelessWidget {
           ],
           ?child,
         ],
+      ),
       ),
     );
 

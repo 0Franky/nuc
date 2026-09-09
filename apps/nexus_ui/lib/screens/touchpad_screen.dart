@@ -2,10 +2,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import '../services/lan_sync_service.dart';
 import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
 import '../widgets/media_quick_bar.dart';
 import '../widgets/remote_keyboard_modal.dart';
+import '../widgets/target_device_selector.dart';
 
 class TouchpadRemoteScreen extends StatefulWidget {
   const TouchpadRemoteScreen({super.key});
@@ -15,6 +17,7 @@ class TouchpadRemoteScreen extends StatefulWidget {
 }
 
 class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
+  String get _targetPeerId => LanSyncService.instance.selectedTargetDeviceId ?? "00000000-0000-0000-0000-000000000001";
   bool _gyroPointerActive = false;
   StreamSubscription<GyroscopeEvent>? _gyroSub;
   final Map<int, Offset> _currentPointers = {};
@@ -45,14 +48,14 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
   void dispose() {
     _gyroSub?.cancel();
     if (_leftButtonDown || _isTapDragging) {
-      NexusFfiBridge.instance.sendTouchpadButton("Left", false);
+      NexusFfiBridge.instance.sendTouchpadButton("Left", false, targetPeerId: _targetPeerId);
     }
     if (_rightButtonDown) {
-      NexusFfiBridge.instance.sendTouchpadButton("Right", false);
+      NexusFfiBridge.instance.sendTouchpadButton("Right", false, targetPeerId: _targetPeerId);
     }
-    if (_ctrlActive) NexusFfiBridge.instance.sendKeyboardKey("Control", isDown: false);
-    if (_altActive) NexusFfiBridge.instance.sendKeyboardKey("Alt", isDown: false);
-    if (_winActive) NexusFfiBridge.instance.sendKeyboardKey("Win", isDown: false);
+    if (_ctrlActive) NexusFfiBridge.instance.sendKeyboardKey("Control", isDown: false, targetPeerId: _targetPeerId);
+    if (_altActive) NexusFfiBridge.instance.sendKeyboardKey("Alt", isDown: false, targetPeerId: _targetPeerId);
+    if (_winActive) NexusFfiBridge.instance.sendKeyboardKey("Win", isDown: false, targetPeerId: _targetPeerId);
     super.dispose();
   }
 
@@ -84,7 +87,7 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
         if (stepX != 0 || stepY != 0) {
           _accumX -= stepX;
           _accumY -= stepY;
-          NexusFfiBridge.instance.sendTouchpadDelta("00000000-0000-0000-0000-000000000001", stepX, stepY);
+          NexusFfiBridge.instance.sendTouchpadDelta(_targetPeerId, stepX, stepY);
         }
       });
     }
@@ -105,7 +108,7 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
           _isTapDragging = true;
           _touchAccumX = 0.0;
           _touchAccumY = 0.0;
-          NexusFfiBridge.instance.sendTouchpadButton("Left", true);
+          NexusFfiBridge.instance.sendTouchpadButton("Left", true, targetPeerId: _targetPeerId);
           HapticFeedback.heavyImpact();
           _lastTapUpTime = null;
           _lastTapUpPos = null;
@@ -130,7 +133,7 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
     } else {
       if (_isTapDragging) {
         _isTapDragging = false;
-        NexusFfiBridge.instance.sendTouchpadButton("Left", false);
+        NexusFfiBridge.instance.sendTouchpadButton("Left", false, targetPeerId: _targetPeerId);
       }
       if (_currentPointers.length > _maxPointersInGesture) {
         _maxPointersInGesture = _currentPointers.length;
@@ -158,12 +161,12 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
       if (stepX != 0 || stepY != 0) {
         _touchAccumX -= stepX;
         _touchAccumY -= stepY;
-        NexusFfiBridge.instance.sendTouchpadDelta("00000000-0000-0000-0000-000000000001", stepX, stepY);
+        NexusFfiBridge.instance.sendTouchpadDelta(_targetPeerId, stepX, stepY);
       }
     } else if (_currentPointers.length >= 2) {
       final dy = event.delta.dy.round();
       if (dy != 0) {
-        NexusFfiBridge.instance.sendTouchpadScroll(dy);
+        NexusFfiBridge.instance.sendTouchpadScroll(dy, targetPeerId: _targetPeerId);
       }
     }
   }
@@ -178,14 +181,14 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
 
       if (_isTapDragging) {
         _isTapDragging = false;
-        NexusFfiBridge.instance.sendTouchpadButton("Left", false);
+        NexusFfiBridge.instance.sendTouchpadButton("Left", false, targetPeerId: _targetPeerId);
         HapticFeedback.lightImpact();
         _lastTapUpTime = null;
         _lastTapUpPos = null;
       } else {
         if (_maxPointersInGesture >= 2) {
           if (durationMs < 450) {
-            NexusFfiBridge.instance.sendTouchpadClick("Right");
+            NexusFfiBridge.instance.sendTouchpadClick("Right", targetPeerId: _targetPeerId);
             HapticFeedback.mediumImpact();
             _lastTapUpTime = null;
             _lastTapUpPos = null;
@@ -202,7 +205,7 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
           }
         } else if (_maxPointersInGesture == 1) {
           if (!_gestureMoved && durationMs < 350) {
-            NexusFfiBridge.instance.sendTouchpadClick("Left");
+            NexusFfiBridge.instance.sendTouchpadClick("Left", targetPeerId: _targetPeerId);
             HapticFeedback.lightImpact();
             _lastTapUpTime = now;
             _lastTapUpPos = event.position;
@@ -226,7 +229,7 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
     if (_currentPointers.isEmpty) {
       if (_isTapDragging) {
         _isTapDragging = false;
-        NexusFfiBridge.instance.sendTouchpadButton("Left", false);
+        NexusFfiBridge.instance.sendTouchpadButton("Left", false, targetPeerId: _targetPeerId);
       }
       _lastTapUpTime = null;
       _lastTapUpPos = null;
@@ -256,6 +259,19 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
       ),
       body: Column(
         children: [
+          // Top Target PC Switcher Bar
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+            child: TargetDeviceSelector(
+              compact: true,
+              filterType: 'Desktop',
+              title: "Controllo PC Attivo",
+              onDeviceSelected: (_) {
+                setState(() {});
+              },
+            ),
+          ),
+
           // Top System Key Bar
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -374,17 +390,17 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
                     behavior: HitTestBehavior.opaque,
                     onPointerDown: (_) {
                       setState(() => _leftButtonDown = true);
-                      NexusFfiBridge.instance.sendTouchpadButton("Left", true);
+                      NexusFfiBridge.instance.sendTouchpadButton("Left", true, targetPeerId: _targetPeerId);
                       HapticFeedback.heavyImpact();
                     },
                     onPointerUp: (_) {
                       setState(() => _leftButtonDown = false);
-                      NexusFfiBridge.instance.sendTouchpadButton("Left", false);
+                      NexusFfiBridge.instance.sendTouchpadButton("Left", false, targetPeerId: _targetPeerId);
                       HapticFeedback.lightImpact();
                     },
                     onPointerCancel: (_) {
                       setState(() => _leftButtonDown = false);
-                      NexusFfiBridge.instance.sendTouchpadButton("Left", false);
+                      NexusFfiBridge.instance.sendTouchpadButton("Left", false, targetPeerId: _targetPeerId);
                     },
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 100),
@@ -430,17 +446,17 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
                     behavior: HitTestBehavior.opaque,
                     onPointerDown: (_) {
                       setState(() => _rightButtonDown = true);
-                      NexusFfiBridge.instance.sendTouchpadButton("Right", true);
+                      NexusFfiBridge.instance.sendTouchpadButton("Right", true, targetPeerId: _targetPeerId);
                       HapticFeedback.heavyImpact();
                     },
                     onPointerUp: (_) {
                       setState(() => _rightButtonDown = false);
-                      NexusFfiBridge.instance.sendTouchpadButton("Right", false);
+                      NexusFfiBridge.instance.sendTouchpadButton("Right", false, targetPeerId: _targetPeerId);
                       HapticFeedback.lightImpact();
                     },
                     onPointerCancel: (_) {
                       setState(() => _rightButtonDown = false);
-                      NexusFfiBridge.instance.sendTouchpadButton("Right", false);
+                      NexusFfiBridge.instance.sendTouchpadButton("Right", false, targetPeerId: _targetPeerId);
                     },
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 100),
@@ -526,21 +542,22 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
           setState(() {
             if (label == 'Ctrl') {
               _ctrlActive = !_ctrlActive;
-              NexusFfiBridge.instance.sendKeyboardKey('Control', isDown: _ctrlActive);
+              NexusFfiBridge.instance.sendKeyboardKey('Control', isDown: _ctrlActive, targetPeerId: _targetPeerId);
             } else if (label == 'Alt') {
               _altActive = !_altActive;
-              NexusFfiBridge.instance.sendKeyboardKey('Alt', isDown: _altActive);
+              NexusFfiBridge.instance.sendKeyboardKey('Alt', isDown: _altActive, targetPeerId: _targetPeerId);
             } else if (label == 'Win') {
               _winActive = !_winActive;
-              NexusFfiBridge.instance.sendKeyboardKey('Win', isDown: _winActive);
+              NexusFfiBridge.instance.sendKeyboardKey('Win', isDown: _winActive, targetPeerId: _targetPeerId);
             }
           });
         } else {
-          NexusFfiBridge.instance.sendKeyboardKey(label);
+          NexusFfiBridge.instance.sendKeyboardKey(label, targetPeerId: _targetPeerId);
           ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          final targetName = LanSyncService.instance.targetDeviceDisplayName;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('⌨️ Tasto $label inviato al PC'),
+              content: Text('⌨️ Tasto $label inviato al PC ($targetName)'),
               duration: const Duration(milliseconds: 600),
               backgroundColor: NexusTheme.accentIndigo,
             ),

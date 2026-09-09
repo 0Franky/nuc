@@ -30,7 +30,13 @@ async fn main() -> anyhow::Result<()> {
     let identity = DeviceIdentity::generate();
     let device_id = identity.device_id;
     let fingerprint = identity.fingerprint();
-    let hostname = whoami_hostname();
+    let raw_id = device_id.to_string().replace('-', "");
+    let suffix = if raw_id.len() >= 4 {
+        raw_id[..4].to_uppercase()
+    } else {
+        "CORE".to_string()
+    };
+    let hostname = format!("{}-{}", whoami_hostname(), suffix);
 
     info!("Device ID:    {}", device_id);
     info!("Fingerprint:  {}", fingerprint);

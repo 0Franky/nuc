@@ -7,6 +7,7 @@ import '../theme/nexus_theme.dart';
 import 'nexus_card.dart';
 import 'nexus_pill.dart';
 import 'nexus_button.dart';
+import 'target_device_selector.dart';
 
 class NexusAudioCard extends StatefulWidget {
   final bool audioRelayActive;
@@ -119,7 +120,8 @@ class _NexusAudioCardState extends State<NexusAudioCard> {
 
   @override
   Widget build(BuildContext context) {
-    final localIp = LanSyncService.instance.pcIp ?? '127.0.0.1';
+    final targetPeer = LanSyncService.instance.selectedTargetPeer;
+    final localIp = targetPeer?['ip'] as String? ?? LanSyncService.instance.pcIp ?? '127.0.0.1';
     final volPercent = (_volume * 100).toInt();
 
     return NexusCard(
@@ -139,6 +141,15 @@ class _NexusAudioCardState extends State<NexusAudioCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          TargetDeviceSelector(
+            compact: true,
+            filterType: 'Desktop',
+            title: "Sorgente Audio PC",
+            onDeviceSelected: (_) {
+              setState(() {});
+            },
+          ),
+          const SizedBox(height: 12),
           Row(
             children: [
               IconButton.filledTonal(

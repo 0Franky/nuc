@@ -9,6 +9,7 @@ import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
 import '../widgets/nexus_pill.dart';
 import '../widgets/nexus_button.dart';
+import '../widgets/target_device_selector.dart';
 
 class FileTransferScreen extends StatefulWidget {
   const FileTransferScreen({super.key});
@@ -193,9 +194,12 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'
         : '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
 
-    final offer = NexusFfiBridge.instance.offerFileTransfer(name, sizeBytes);
+    final targetPeer = LanSyncService.instance.selectedTargetPeer;
+    final targetPeerId = LanSyncService.instance.selectedTargetDeviceId;
+    final targetDevice = targetPeer?['name'] as String? ?? (Platform.isAndroid ? 'PC Windows' : 'Smartphone Android');
+
+    final offer = NexusFfiBridge.instance.offerFileTransfer(name, sizeBytes, targetPeerId: targetPeerId);
     final fileId = offer['file_id']?.toString() ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
-    final targetDevice = Platform.isAndroid ? 'PC Windows (LAN)' : 'Smartphone Android (Wi-Fi)';
 
     final transferEntry = {
       'file_id': fileId,
@@ -382,6 +386,15 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
       body: ListView(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         children: [
+          // Target Peer Selection
+          TargetDeviceSelector(
+            title: "Dispositivo Destinatario",
+            onDeviceSelected: (_) {
+              setState(() {});
+            },
+          ),
+          const SizedBox(height: 12),
+
           // AirDrop Droptarget Hero Area
           GestureDetector(
             onTap: _pickAndSendRealFile,

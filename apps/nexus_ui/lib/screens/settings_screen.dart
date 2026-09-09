@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import '../models/device_colors.dart';
 import '../services/lan_sync_service.dart';
 import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
@@ -14,6 +15,20 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  late final TextEditingController _nameCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: LanSyncService.instance.deviceName);
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final service = LanSyncService.instance;
@@ -27,6 +42,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         children: [
+          // Section 0: Identità Dispositivo
+          NexusCard(
+            title: 'Identità Dispositivo',
+            subtitle: 'Nome visibile sui peer e suffisso anticollisione',
+            icon: Icons.badge_outlined,
+            iconColor: NexusDeviceColors.colorForDeviceName(service.deviceName),
+            trailing: Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                color: NexusDeviceColors.colorForDeviceName(service.deviceName),
+                shape: BoxShape.circle,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _nameCtrl,
+                        decoration: InputDecoration(
+                          labelText: 'Nome Dispositivo',
+                          hintText: service.defaultDeviceName,
+                          prefixIcon: const Icon(Icons.edit_outlined, size: 18),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      onPressed: () async {
+                        await service.setDeviceName(_nameCtrl.text);
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('✅ Nome dispositivo aggiornato: ${service.deviceName}'),
+                            backgroundColor: NexusTheme.successGreen,
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                        setState(() {});
+                      },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: NexusTheme.accentIndigo,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: const Text('Salva'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Default: ${service.defaultDeviceName}',
+                      style: const TextStyle(fontSize: 11, color: NexusTheme.textSecondary),
+                    ),
+                    TextButton(
+                      onPressed: () async {
+                        await service.resetDeviceNameToDefault();
+                        _nameCtrl.text = service.deviceName;
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('🔄 Nome ripristinato al default: ${service.deviceName}'),
+                            backgroundColor: NexusTheme.accentIndigo,
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                        setState(() {});
+                      },
+                      child: const Text('Ripristina Default', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
+                ),
+                const Divider(),
+                Row(
+                  children: [
+                    const Icon(Icons.fingerprint, size: 14, color: NexusTheme.textTertiary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'ID Univoco: ${service.deviceId}',
+                        style: const TextStyle(fontSize: 10.5, color: NexusTheme.textTertiary, fontFamily: 'monospace'),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
           // Section 1: Continuità & Flussi P2P
           NexusCard(
             title: 'Moduli di Continuità P2P',

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../services/lan_sync_service.dart';
 import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
+import 'target_device_selector.dart';
 
 /// Modal bottom sheet for remote typing and macro shortcuts sent to the PC.
-class RemoteKeyboardModal extends StatelessWidget {
+class RemoteKeyboardModal extends StatefulWidget {
   const RemoteKeyboardModal({super.key});
 
   static void show(BuildContext context) {
@@ -20,8 +22,23 @@ class RemoteKeyboardModal extends StatelessWidget {
   }
 
   @override
+  State<RemoteKeyboardModal> createState() => _RemoteKeyboardModalState();
+}
+
+class _RemoteKeyboardModalState extends State<RemoteKeyboardModal> {
+  final textCtrl = TextEditingController();
+
+  String get _targetPeerId =>
+      LanSyncService.instance.selectedTargetDeviceId ?? "00000000-0000-0000-0000-000000000001";
+
+  @override
+  void dispose() {
+    textCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final textCtrl = TextEditingController();
     return Padding(
       padding: EdgeInsets.only(
         left: 16,
@@ -48,7 +65,14 @@ class RemoteKeyboardModal extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
+          TargetDeviceSelector(
+            compact: true,
+            filterType: 'Desktop',
+            title: "Destinazione Input",
+            onDeviceSelected: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 10),
           const Text(
             'Digita o incolla testo da inviare direttamente alla finestra attiva del computer:',
             style: TextStyle(color: NexusTheme.textSecondary, fontSize: 11),
@@ -74,7 +98,7 @@ class RemoteKeyboardModal extends StatelessWidget {
                   ),
                   onSubmitted: (text) {
                     if (text.isNotEmpty) {
-                      NexusFfiBridge.instance.sendTextInput(text);
+                      NexusFfiBridge.instance.sendTextInput(text, targetPeerId: _targetPeerId);
                       textCtrl.clear();
                       Navigator.pop(context);
                       ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -93,7 +117,7 @@ class RemoteKeyboardModal extends StatelessWidget {
                 onPressed: () {
                   final text = textCtrl.text;
                   if (text.isNotEmpty) {
-                    NexusFfiBridge.instance.sendTextInput(text);
+                    NexusFfiBridge.instance.sendTextInput(text, targetPeerId: _targetPeerId);
                     textCtrl.clear();
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -154,11 +178,12 @@ class RemoteKeyboardModal extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NexusTheme.radiusPill)),
       onPressed: () {
         HapticFeedback.lightImpact();
-        NexusFfiBridge.instance.sendKeyboardCombo(combo);
+        NexusFfiBridge.instance.sendKeyboardCombo(combo, targetPeerId: _targetPeerId);
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        final targetName = LanSyncService.instance.targetDeviceDisplayName;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('⚡ Macro eseguita: $label ($tooltip)'),
+            content: Text('⚡ Macro eseguita: $label ($tooltip) -> $targetName'),
             duration: const Duration(milliseconds: 700),
             backgroundColor: NexusTheme.accentIndigo,
           ),
@@ -175,11 +200,12 @@ class RemoteKeyboardModal extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NexusTheme.radiusPill)),
       onPressed: () {
         HapticFeedback.lightImpact();
-        NexusFfiBridge.instance.sendKeyboardKey(key);
+        NexusFfiBridge.instance.sendKeyboardKey(key, targetPeerId: _targetPeerId);
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        final targetName = LanSyncService.instance.targetDeviceDisplayName;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('⌨️ Tasto $label inviato'),
+            content: Text('⌨️ Tasto $label inviato al PC ($targetName)'),
             duration: const Duration(milliseconds: 600),
             backgroundColor: NexusTheme.accentIndigo,
           ),

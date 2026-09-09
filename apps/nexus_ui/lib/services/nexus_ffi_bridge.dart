@@ -299,7 +299,7 @@ class NexusFfiBridge {
   /// Emits trackpad delta
   int sendTouchpadDelta(String peerId, int dx, int dy) {
     if (_nexusSendTouchpadDelta == null) {
-      LanSyncService.instance.sendTouchpadDelta(dx, dy);
+      LanSyncService.instance.sendTouchpadDelta(dx, dy, targetPeerId: peerId);
       return 0;
     }
     final peerPtr = peerId.toNativeUtf8();
@@ -309,36 +309,36 @@ class NexusFfiBridge {
   }
 
   /// Emits mouse button click (Left, Right)
-  int sendTouchpadClick(String button) {
-    LanSyncService.instance.sendTouchpadClick(button);
+  int sendTouchpadClick(String button, {String? targetPeerId}) {
+    LanSyncService.instance.sendTouchpadClick(button, targetPeerId: targetPeerId);
     return 0;
   }
 
   /// Emits mouse button down/up event for holding mouse and text selection / drag-drop
-  int sendTouchpadButton(String button, bool isDown) {
-    LanSyncService.instance.sendTouchpadButton(button, isDown);
+  int sendTouchpadButton(String button, bool isDown, {String? targetPeerId}) {
+    LanSyncService.instance.sendTouchpadButton(button, isDown, targetPeerId: targetPeerId);
     return 0;
   }
 
   /// Emits vertical scroll wheel delta
-  int sendTouchpadScroll(int dy) {
-    LanSyncService.instance.sendTouchpadScroll(dy);
+  int sendTouchpadScroll(int dy, {String? targetPeerId}) {
+    LanSyncService.instance.sendTouchpadScroll(dy, targetPeerId: targetPeerId);
     return 0;
   }
 
   /// Sends a single keyboard keystroke (Esc, Tab, Enter, etc.)
-  void sendKeyboardKey(String key, {bool? isDown}) {
-    LanSyncService.instance.sendKeyboardKey(key, isDown: isDown);
+  void sendKeyboardKey(String key, {bool? isDown, String? targetPeerId}) {
+    LanSyncService.instance.sendKeyboardKey(key, isDown: isDown, targetPeerId: targetPeerId);
   }
 
   /// Sends a keyboard key combo (e.g. ['Ctrl', 'C'], ['Win', 'D'])
-  void sendKeyboardCombo(List<String> keys) {
-    LanSyncService.instance.sendKeyboardCombo(keys);
+  void sendKeyboardCombo(List<String> keys, {String? targetPeerId}) {
+    LanSyncService.instance.sendKeyboardCombo(keys, targetPeerId: targetPeerId);
   }
 
   /// Injects arbitrary Unicode text into active PC application
-  void sendTextInput(String text) {
-    LanSyncService.instance.sendTextInput(text);
+  void sendTextInput(String text, {String? targetPeerId}) {
+    LanSyncService.instance.sendTextInput(text, targetPeerId: targetPeerId);
   }
 
   /// Sends Open URL remote command to mobile/PC
