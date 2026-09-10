@@ -6,12 +6,12 @@ pub(crate) struct LinuxInputInjector;
 #[derive(Debug, PartialEq)]
 enum Backend {
     X11,
-    Uinput,
+    Wayland,
 }
 
 fn backend(session: &str, wayland_display: &str, display: &str) -> NexusResult<Backend> {
     if session.eq_ignore_ascii_case("wayland") || !wayland_display.is_empty() {
-        Ok(Backend::Uinput)
+        Ok(Backend::Wayland)
     } else if !display.is_empty() {
         Ok(Backend::X11)
     } else {
@@ -29,14 +29,23 @@ fn error(message: impl Into<String>) -> NexusError {
 }
 
 fn run(program: &str, args: &[&str]) -> NexusResult<()> {
-    let output = std::process::Command::new(program).args(args).output()
-        .map_err(|e| error(format!("{program} non disponibile: {e}. Su X11 installa xdotool; su Wayland configura ydotool >= 1.0 e ydotoold.")))?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            error(format!(
+                "{program} non disponibile: {e}. Per i comandi tastiera X11 installa xdotool."
+            ))
+        })?;
     if output.status.success() {
         return Ok(());
     }
     // Do not include arguments: keyboard text may contain private data.
-    Err(error(format!("{program} ha rifiutato l'input ({}). Verifica accesso alla sessione grafica o al socket ydotoold. {}",
-        output.status, String::from_utf8_lossy(&output.stderr).trim())))
+    Err(error(format!(
+        "{program} ha rifiutato l'input ({}). Verifica accesso alla sessione grafica desktop. {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -54,67 +63,45 @@ impl LinuxInputInjector {
             return Ok(());
         }
         match Self::backend()? {
-            Backend::X11 => run(
-                "xdotool",
-                &["mousemove_relative", "--", &dx.to_string(), &dy.to_string()],
-            ),
-            Backend::Uinput => run(
-                "ydotool",
-                &["mousemove", "-x", &dx.to_string(), "-y", &dy.to_string()],
-            ),
+            Backend::X11 => x11_pointer_move(dx, dy, true),
+            Backend::Wayland => wayland(WaylandEvent::Motion(dx, dy)),
         }
     }
 
     pub fn inject_mouse_move_absolute(x: i32, y: i32, _w: i32, _h: i32) -> NexusResult<()> {
         match Self::backend()? {
-            Backend::X11 => run(
-                "xdotool",
-                &["mousemove", "--", &x.to_string(), &y.to_string()],
-            ),
-            Backend::Uinput => run(
-                "ydotool",
-                &[
-                    "mousemove",
-                    "--absolute",
-                    "-x",
-                    &x.to_string(),
-                    "-y",
-                    &y.to_string(),
-                ],
-            ),
+            Backend::X11 => x11_pointer_move(x, y, false),
+            Backend::Wayland => Err(error("Posizione assoluta Wayland richiede un flusso schermo autorizzato; usa il touchpad relativo.")),
         }
     }
 
-    fn buttons(button: MouseButton) -> (&'static str, u8) {
+    fn buttons(button: MouseButton) -> (u8, u8) {
         match button {
-            MouseButton::Left => ("1", 0),
-            MouseButton::Right => ("3", 1),
-            MouseButton::Middle => ("2", 2),
+            MouseButton::Left => (1, 0),
+            MouseButton::Right => (3, 1),
+            MouseButton::Middle => (2, 2),
         }
     }
 
     pub fn inject_mouse_button(button: MouseButton, is_down: bool) -> NexusResult<()> {
         let (xbutton, ybutton) = Self::buttons(button);
         match Self::backend()? {
-            Backend::X11 => run(
-                "xdotool",
-                &[if is_down { "mousedown" } else { "mouseup" }, xbutton],
-            ),
-            Backend::Uinput => run(
-                "ydotool",
-                &[
-                    "click",
-                    &format!("0x{:X}", ybutton | if is_down { 0x40 } else { 0x80 }),
-                ],
-            ),
+            Backend::X11 => x11_pointer_button(xbutton, is_down),
+            Backend::Wayland => wayland(WaylandEvent::Button(
+                272 + i32::from(ybutton),
+                Some(is_down),
+            )),
         }
     }
 
     pub fn inject_mouse_click(button: MouseButton) -> NexusResult<()> {
         let (xbutton, ybutton) = Self::buttons(button);
         match Self::backend()? {
-            Backend::X11 => run("xdotool", &["click", xbutton]),
-            Backend::Uinput => run("ydotool", &["click", &format!("0x{:X}", ybutton | 0xC0)]),
+            Backend::X11 => {
+                x11_pointer_button(xbutton, true)?;
+                x11_pointer_button(xbutton, false)
+            }
+            Backend::Wayland => wayland(WaylandEvent::Button(272 + i32::from(ybutton), None)),
         }
     }
 
@@ -124,19 +111,15 @@ impl LinuxInputInjector {
         }
         let delta = delta_y.clamp(-10, 10);
         match Self::backend()? {
-            Backend::X11 => run(
-                "xdotool",
-                &[
-                    "click",
-                    "--repeat",
-                    &delta.abs().to_string(),
-                    if delta > 0 { "4" } else { "5" },
-                ],
-            ),
-            Backend::Uinput => run(
-                "ydotool",
-                &["mousemove", "--wheel", "-x", "0", "-y", &delta.to_string()],
-            ),
+            Backend::X11 => {
+                let button = if delta > 0 { 4 } else { 5 };
+                for _ in 0..delta.abs() {
+                    x11_pointer_button(button, true)?;
+                    x11_pointer_button(button, false)?;
+                }
+                Ok(())
+            }
+            Backend::Wayland => wayland(WaylandEvent::Scroll(-delta)),
         }
     }
 
@@ -287,15 +270,9 @@ impl LinuxInputInjector {
                     ],
                 )
             }
-            Backend::Uinput => {
+            Backend::Wayland => {
                 let code = Self::key_code(key)?;
-                match is_down {
-                    Some(down) => run("ydotool", &["key", &format!("{code}:{}", u8::from(down))]),
-                    None => run(
-                        "ydotool",
-                        &["key", &format!("{code}:1"), &format!("{code}:0")],
-                    ),
-                }
+                wayland(WaylandEvent::Key(code, is_down))
             }
         }
     }
@@ -319,18 +296,12 @@ impl LinuxInputInjector {
                     .collect();
                 run("xdotool", &["key", "--", &keys.join("+")])
             }
-            Backend::Uinput => {
+            Backend::Wayland => {
                 let codes: Vec<u16> = keys
                     .iter()
                     .map(|k| Self::key_code(k))
                     .collect::<NexusResult<_>>()?;
-                let mut args = vec!["key".to_string()];
-                args.extend(codes.iter().map(|c| format!("{c}:1")));
-                args.extend(codes.iter().rev().map(|c| format!("{c}:0")));
-                run(
-                    "ydotool",
-                    &args.iter().map(String::as_str).collect::<Vec<_>>(),
-                )
+                wayland(WaylandEvent::Combo(codes))
             }
         }
     }
@@ -340,11 +311,8 @@ impl LinuxInputInjector {
             return Ok(());
         }
         match Self::backend()? {
-            Backend::X11 => run("xdotool", &["type", "--clearmodifiers", "--", text]),
-            Backend::Uinput if text.is_ascii() => run("ydotool", &["type", "--", text]),
-            Backend::Uinput => Err(error(
-                "Il backend Wayland ydotool non supporta testo Unicode; usa gli appunti.",
-            )),
+            Backend::X11 => run("xdotool", &["type", "--delay", "0", "--clearmodifiers", "--", text]),
+            Backend::Wayland => wayland(WaylandEvent::Text(text.to_owned())),
         }
     }
 }
@@ -356,9 +324,9 @@ mod tests {
     fn wayland_must_not_use_xwayland_even_when_display_is_set() {
         assert_eq!(
             backend("wayland", "wayland-0", ":0").unwrap(),
-            Backend::Uinput
+            Backend::Wayland
         );
-        assert_eq!(backend("", "wayland-0", ":0").unwrap(), Backend::Uinput);
+        assert_eq!(backend("", "wayland-0", ":0").unwrap(), Backend::Wayland);
         assert_eq!(backend("x11", "", ":0").unwrap(), Backend::X11);
         assert!(backend("", "", "").is_err());
     }
@@ -383,5 +351,44 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn failed_command_exit_is_reported() {
         assert!(run("false", &[]).is_err());
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn x11_pointer_move(x: i32, y: i32, relative: bool) -> NexusResult<()> {
+    crate::x11_pointer::move_pointer(x, y, relative)
+}
+#[cfg(target_os = "linux")]
+fn x11_pointer_button(button: u8, down: bool) -> NexusResult<()> {
+    crate::x11_pointer::button(button, down)
+}
+#[cfg(not(target_os = "linux"))]
+fn x11_pointer_move(_: i32, _: i32, _: bool) -> NexusResult<()> {
+    Err(error("X11 disponibile solo su Linux"))
+}
+#[cfg(not(target_os = "linux"))]
+fn x11_pointer_button(_: u8, _: bool) -> NexusResult<()> {
+    Err(error("X11 disponibile solo su Linux"))
+}
+
+#[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) enum WaylandEvent {
+    Motion(i32, i32),
+    Button(i32, Option<bool>),
+    Scroll(i32),
+    Key(u16, Option<bool>),
+    Combo(Vec<u16>),
+    Text(String),
+}
+fn wayland(event: WaylandEvent) -> NexusResult<()> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::wayland_input::send(event)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = event;
+        Err(error("Wayland disponibile solo su Linux"))
     }
 }

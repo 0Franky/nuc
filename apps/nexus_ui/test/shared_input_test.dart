@@ -12,21 +12,63 @@ void main() {
     'ip': ip,
     'os': 'linux',
     'online': true,
-    'shared_input': {'fingerprint': fingerprint, 'port': 4243},
+    'shared_input': {'fingerprint': fingerprint, 'port': 4243, 'emulation_ready': true},
   };
-  test('three PCs choose nearest approved neighbor independent of discovery order', () {
-    final lan = LanSyncService.instance;
-    lan.discoveredPeers = [peer('far', '192.0.2.3'), peer('near', '192.0.2.2')];
-    lan.customDeviceOffsets..clear()..addAll({'far': const Offset(240,0), 'near':const Offset(120,0)});
-    expect(SharedInputService.neighboringPositions(lan, {'far':fingerprint,'near':fingerprint}), {'near':'right'});
-    lan.discoveredPeers.last['shared_input'] = {'fingerprint': fingerprint, 'port': 0};
-    expect(SharedInputService.neighboringPositions(lan, {'far':fingerprint,'near':fingerprint}), {'far':'right'});
-    lan.discoveredPeers.last['shared_input'] = {'fingerprint': fingerprint, 'port': 4243};
-    lan.customDeviceOffsets..clear()..addAll({'far': const Offset(120,0), 'near':const Offset(-120,0)});
-    expect(SharedInputService.neighboringPositions(lan, {'far':fingerprint,'near':fingerprint}), {'near':'left','far':'right'});
-    lan.discoveredPeers = [];
-    lan.customDeviceOffsets.clear();
+  test('legacy peer without readiness never captures a screen edge', () {
+    final remote = peer('legacy', '192.0.2.11');
+    (remote['shared_input'] as Map).remove('emulation_ready');
+    expect(SharedInputService.configuration([remote], {'legacy': fingerprint},
+        {'legacy': 'left'}), isNot(contains('[[clients]]')));
   });
+  test(
+    'three PCs choose nearest approved neighbor independent of discovery order',
+    () {
+      final lan = LanSyncService.instance;
+      lan.discoveredPeers = [
+        peer('far', '192.0.2.3'),
+        peer('near', '192.0.2.2'),
+      ];
+      lan.customDeviceOffsets
+        ..clear()
+        ..addAll({'far': const Offset(240, 0), 'near': const Offset(120, 0)});
+      expect(
+        SharedInputService.neighboringPositions(lan, {
+          'far': fingerprint,
+          'near': fingerprint,
+        }),
+        {'near': 'right'},
+      );
+      lan.discoveredPeers.last['shared_input'] = {
+        'fingerprint': fingerprint,
+        'emulation_ready': true,
+        'port': 0,
+      };
+      expect(
+        SharedInputService.neighboringPositions(lan, {
+          'far': fingerprint,
+          'near': fingerprint,
+        }),
+        {'far': 'right'},
+      );
+      lan.discoveredPeers.last['shared_input'] = {
+        'fingerprint': fingerprint,
+        'emulation_ready': true,
+        'port': 4243,
+      };
+      lan.customDeviceOffsets
+        ..clear()
+        ..addAll({'far': const Offset(120, 0), 'near': const Offset(-120, 0)});
+      expect(
+        SharedInputService.neighboringPositions(lan, {
+          'far': fingerprint,
+          'near': fingerprint,
+        }),
+        {'near': 'left', 'far': 'right'},
+      );
+      lan.discoveredPeers = [];
+      lan.customDeviceOffsets.clear();
+    },
+  );
   test('discovery alone never authorizes physical input', () {
     final config = SharedInputService.configuration(
       [peer('pc', '192.0.2.1')],
@@ -45,6 +87,37 @@ void main() {
     expect(config, contains('position = "right"'));
     expect(config, contains('KeyLeftMeta'));
     expect(config, isNot(contains(r'\n')));
+  });
+  test('remote emulation unavailable never captures toward that edge', () {
+    final remote = peer('pc', '192.0.2.1');
+    (remote['shared_input'] as Map)['emulation_ready'] = false;
+    final config = SharedInputService.configuration(
+      [remote],
+      {'pc': fingerprint},
+      {'pc': 'left'},
+    );
+    expect(config, isNot(contains('[[clients]]')));
+    // Trust is retained so readiness can recover without re-authorizing.
+    expect(config, contains(fingerprint));
+    (remote['shared_input'] as Map)['emulation_ready'] = true;
+    expect(
+      SharedInputService.configuration([remote], {'pc': fingerprint}, {
+        'pc': 'left',
+      }),
+      contains('[[clients]]'),
+    );
+    final lan = LanSyncService.instance;
+    lan.discoveredPeers = [remote];
+    lan.customDeviceOffsets
+      ..clear()
+      ..['pc'] = const Offset(-120, 0);
+    (remote['shared_input'] as Map)['emulation_ready'] = false;
+    expect(
+      SharedInputService.neighboringPositions(lan, {'pc': fingerprint}),
+      isEmpty,
+    );
+    lan.discoveredPeers = [];
+    lan.customDeviceOffsets.clear();
   });
   test('changed identity, offline peer and missing topology disable edges', () {
     for (final p in [

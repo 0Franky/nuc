@@ -4,6 +4,7 @@ import '../services/lan_sync_service.dart';
 import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
+import '../widgets/proximity_lock_switch.dart';
 import '../widgets/nexus_pill.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -19,11 +20,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    LanSyncService.instance.addListener(_refresh);
     _nameCtrl = TextEditingController(text: LanSyncService.instance.deviceName);
   }
 
+  void _refresh() { if (mounted) setState(() {}); }
+
   @override
   void dispose() {
+    LanSyncService.instance.removeListener(_refresh);
     _nameCtrl.dispose();
     super.dispose();
   }
@@ -216,19 +221,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
                 const Divider(),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Smart Walk-Away Lock (BLE)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
-                  subtitle: const Text('Blocca istantaneamente il PC se ti allontani dalla scrivania col telefono',
-                      style: TextStyle(fontSize: 11.5, color: NexusTheme.textSecondary)),
-                  value: service.autoLockOnWalkAway,
-                  onChanged: (v) {
-                    setState(() {
-                      service.autoLockOnWalkAway = v;
-                      service.saveSettingBool('autoLockOnWalkAway', v);
-                    });
-                  },
-                ),
+                const ProximityLockSwitch(),
                 const Divider(),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -260,10 +253,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const Divider(),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Topologia Spaziale Automatica (BLE Radar)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                  title: const Text('Monitoraggio prossimità BLE', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
                   subtitle: Text(
                     service.isBleHardwareAvailable
-                        ? 'Determina la posizione destra/sinistra dello schermo via segnale radio BLE'
+                        ? 'Monitoraggio BLE: la disposizione degli schermi si imposta nel canvas'
                         : 'Determina la posizione via BLE (Disabilitato: Bluetooth spento sul dispositivo)',
                     style: TextStyle(
                       fontSize: 11.5,
@@ -274,8 +267,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: service.isBleHardwareAvailable
                       ? (v) {
                           setState(() {
-                            service.bleSpatialAutoDetect = v;
-                            service.saveSettingBool('bleSpatialAutoDetect', v);
+                            service.setBleSpatialAutoDetect(v);
                           });
                         }
                       : null,
@@ -288,7 +280,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Section 2.5: Distanze & Soglie Prossimità (Configurabili)
           NexusCard(
             title: 'Soglie di Distanza Prossimità (BLE)',
-            subtitle: 'Calibra le distanze di allontanamento e ritorno in base alle dimensioni della stanza',
+            subtitle: 'Il BLE fornisce una stima, non una misura precisa. Calibra il dispositivo scelto a 1 metro.',
             icon: Icons.social_distance_rounded,
             trailing: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -298,13 +290,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 border: Border.all(color: NexusTheme.accentIndigo.withAlpha(80)),
               ),
               child: Text(
-                'Live: ${service.estimatedDistanceMeters != null ? "${service.estimatedDistanceMeters!.toStringAsFixed(1)}m" : "N/D"}',
+                'Stima: ${service.estimatedDistanceMeters != null ? "${service.estimatedDistanceMeters!.toStringAsFixed(1)}m" : "N/D"}',
                 style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: NexusTheme.accentIndigo),
               ),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                DropdownButtonFormField<String>(
+                  key: ValueKey(service.proximityPeerId),
+                  initialValue: service.discoveredPeers.any((p) => p['id'] == service.proximityPeerId)
+                      ? service.proximityPeerId : null,
+                  decoration: const InputDecoration(labelText: 'Dispositivo di prossimità'),
+                  items: service.discoveredPeers.map((p) => DropdownMenuItem<String>(
+                    value: p['id'] as String,
+                    child: Text('${p['name']}${p['online'] == true ? '' : ' (offline)'}'),
+                  )).toList(),
+                  onChanged: (id) => service.setProximityPeer(id),
+                ),
+                const SizedBox(height: 8),
+                Text(service.proximityStatus, style: const TextStyle(fontSize: 12)),
+                if (service.liveRssi != null)
+                  Text('Segnale: ${service.liveRssi} dBm', style: const TextStyle(fontSize: 12)),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.straighten),
+                  label: const Text('Calibra: dispositivi a 1 metro'),
+                  onPressed: service.hasProximityPeer && service.proximity.canCalibrate(DateTime.now())
+                      ? () async {
+                          final done = await service.calibrateProximityAtOneMeter();
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(done
+                              ? 'Calibrazione salvata per questo dispositivo'
+                              : 'Attendi almeno 5 campioni stabili con i dispositivi a 1 metro')));
+                        } : null,
+                ),
+                const Text('Prima allontana fisicamente i dispositivi a 1 metro e attendi un segnale stabile. '
+                    'Ostacoli e orientamento possono comunque alterare la stima.',
+                    style: TextStyle(fontSize: 11, color: NexusTheme.textSecondary)),
+                const SizedBox(height: 16),
                 // 1. Walk-Away Threshold
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -407,7 +431,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         children: [
                           Text('Soglia Blocco Postazione (Auto-Lock PC)',
                               style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                          Text('Distanza oltre la quale il PC viene bloccato istantaneamente',
+                          Text('Distanza oltre la quale il PC viene bloccato dopo 10 secondi oltre soglia',
                               style: TextStyle(fontSize: 11, color: NexusTheme.textSecondary)),
                         ],
                       ),

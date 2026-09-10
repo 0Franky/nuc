@@ -28,6 +28,7 @@ pub struct NexusEngineHandle {
     pub input_actor: Arc<InputPluginActor>,
     pub clipboard_actor: Arc<ClipboardPluginActor>,
     pub proximity_actor: Arc<ProximityPluginActor>,
+    pub ble_monitor: Arc<crate::ble::BleMonitor>,
     pub files_actor: Arc<FilePluginActor>,
     pub transport: Arc<TransportEngine>,
 }
@@ -68,7 +69,7 @@ pub fn get_local_lan_ip() -> String {
     "127.0.0.1".to_string()
 }
 
-/// Queries real OS Bluetooth radio hardware state (Windows / Mobile)
+/// Queries real OS Bluetooth radio hardware state (Windows / Linux).
 pub fn check_system_bluetooth_enabled() -> bool {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -123,7 +124,25 @@ pub fn check_system_bluetooth_enabled() -> bool {
         is_on
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        use dbus::blocking::stdintf::org_freedesktop_dbus::ObjectManager;
+        let is_on = dbus::blocking::Connection::new_system().ok().and_then(|connection| {
+            let proxy = connection.with_proxy("org.bluez", "/", std::time::Duration::from_secs(2));
+            proxy.get_managed_objects().ok().map(|objects| {
+                objects.values().any(|interfaces| {
+                    interfaces.get("org.bluez.Adapter1")
+                        .and_then(|properties| properties.get("Powered"))
+                        .and_then(|value| value.0.as_i64()) == Some(1)
+                })
+            })
+        }).unwrap_or(false);
+        LAST_BT_CHECK_MS.store(now, Ordering::Relaxed);
+        LAST_BT_STATE.store(is_on, Ordering::Relaxed);
+        is_on
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         LAST_BT_CHECK_MS.store(now, Ordering::Relaxed);
         LAST_BT_STATE.store(false, Ordering::Relaxed);
@@ -155,6 +174,9 @@ pub async fn init_nexus_engine(device_name: String) -> nexus_types::NexusResult<
     let proximity_actor = Arc::new(ProximityPluginActor::new(device_id));
     ActorSupervisor::spawn_actor((*proximity_actor).clone(), bus.clone());
 
+    let ble_monitor = crate::ble::BleMonitor::new(device_id.0);
+    ble_monitor.start();
+
     let files_actor = Arc::new(FilePluginActor::new(device_id));
     ActorSupervisor::spawn_actor((*files_actor).clone(), bus.clone());
 
@@ -180,6 +202,7 @@ pub async fn init_nexus_engine(device_name: String) -> nexus_types::NexusResult<
         input_actor,
         clipboard_actor,
         proximity_actor,
+        ble_monitor,
         files_actor,
         transport,
     };

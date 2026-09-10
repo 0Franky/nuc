@@ -27,6 +27,21 @@ class RemoteKeyboardModal extends StatefulWidget {
 
 class _RemoteKeyboardModalState extends State<RemoteKeyboardModal> {
   final textCtrl = TextEditingController();
+  bool _sending = false;
+  String? _sendError;
+
+  Future<void> _sendText() async {
+    final text = textCtrl.text;
+    if (_sending || text.isEmpty) return;
+    final target = _targetPeerId;
+    setState(() { _sending = true; _sendError = null; });
+    final error = await LanSyncService.instance.sendTextInputConfirmed(text, targetPeerId: target);
+    if (!mounted) return;
+    setState(() { _sending = false; _sendError = error; });
+    if (error != null) return;
+    textCtrl.clear();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Digitazione confermata dal PC')));
+  }
 
   String get _targetPeerId =>
       LanSyncService.instance.selectedTargetDeviceId ??
@@ -99,41 +114,15 @@ class _RemoteKeyboardModalState extends State<RemoteKeyboardModal> {
                       borderSide: BorderSide(color: NexusTheme.borderCard),
                     ),
                   ),
-                  onSubmitted: (text) {
-                    if (text.isNotEmpty) {
-                      NexusFfiBridge.instance.sendTextInput(text, targetPeerId: _targetPeerId);
-                      textCtrl.clear();
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('⌨️ Testo digitato su PC: $text'),
-                          duration: const Duration(seconds: 2),
-                        ),
-                      );
-                    }
-                  },
+                  enabled: !_sending,
+                  onSubmitted: (_) => _sendText(),
                 ),
               ),
               const SizedBox(width: 8),
               FilledButton.icon(
-                onPressed: () {
-                  final text = textCtrl.text;
-                  if (text.isNotEmpty) {
-                    NexusFfiBridge.instance.sendTextInput(text, targetPeerId: _targetPeerId);
-                    textCtrl.clear();
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('⌨️ Testo digitato su PC: $text'),
-                        duration: const Duration(seconds: 2),
-                      ),
-                    );
-                  }
-                },
+                onPressed: _sending ? null : _sendText,
                 icon: const Icon(Icons.send_rounded, size: 16),
-                label: const Text('Invia'),
+                label: Text(_sending ? 'Attendi…' : 'Invia'),
                 style: FilledButton.styleFrom(
                   backgroundColor: NexusTheme.accentIndigo,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -141,6 +130,10 @@ class _RemoteKeyboardModalState extends State<RemoteKeyboardModal> {
               ),
             ],
           ),
+          if (_sendError != null) ...[
+            const SizedBox(height: 8),
+            Text(_sendError!, style: const TextStyle(color: NexusTheme.warningAmber)),
+          ],
           const SizedBox(height: 16),
           const Text(
             'Macro Rapide & Scorciatoie:',

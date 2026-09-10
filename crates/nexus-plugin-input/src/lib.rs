@@ -1,3 +1,7 @@
+#[cfg(target_os = "linux")]
+mod wayland_input;
+#[cfg(target_os = "linux")]
+mod x11_pointer;
 #[cfg(any(target_os = "linux", test))]
 mod linux;
 pub mod actor;

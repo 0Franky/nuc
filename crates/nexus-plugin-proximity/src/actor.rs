@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use nexus_actor_system::{EventBus, NexusActor, NexusEvent};
 use nexus_types::{DeviceId, ProximityMotion};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -13,7 +14,7 @@ use crate::kalman::{KalmanRssiFilter, PresenceZone};
 pub struct ProximityPluginActor {
     pub device_id: DeviceId,
     filters: Arc<RwLock<HashMap<DeviceId, (KalmanRssiFilter, PresenceZone, ProximityMotion)>>>,
-    pub auto_lock_enabled: Arc<RwLock<bool>>,
+    auto_lock_enabled: Arc<AtomicBool>,
 }
 
 impl ProximityPluginActor {
@@ -21,8 +22,23 @@ impl ProximityPluginActor {
         Self {
             device_id,
             filters: Arc::new(RwLock::new(HashMap::new())),
-            auto_lock_enabled: Arc::new(RwLock::new(true)),
+            auto_lock_enabled: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Local consent is volatile and off until the application loads its policy.
+    pub fn set_auto_lock_enabled(&self, enabled: bool) {
+        self.auto_lock_enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    pub fn auto_lock_enabled(&self) -> bool {
+        self.auto_lock_enabled.load(Ordering::SeqCst)
+    }
+
+    /// The OS action is executed only after local consent has been checked.
+    /// None means consent denied; Some reports the operating system result.
+    pub fn lock_if_enabled(&self, lock: impl FnOnce() -> bool) -> Option<bool> {
+        self.auto_lock_enabled().then(lock)
     }
 
     /// Feeds an incoming BLE RSSI packet into the Kalman filter
@@ -66,11 +82,9 @@ impl ProximityPluginActor {
                 is_near: new_zone != PresenceZone::Far,
             });
 
-            // If user walked away into Far zone and auto-lock is enabled
-            if new_zone == PresenceZone::Far && *self.auto_lock_enabled.read().await {
-                info!("Triggering Walk-Away Auto-Lock for workstation...");
-                lock_workstation();
-            }
+            // Zones describe signal telemetry only. The application owns the
+            // selected peer, calibration, distance threshold and dwell policy.
+
         }
 
         if prev_motion != motion {

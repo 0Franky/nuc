@@ -1,5 +1,7 @@
 # Topologia, dipendenze e pacchetto Linux — stato operativo
 
+> Aggiornamento successivo: [prossimità e input Wayland](2026-09-10-proximity-input-review.md).
+
 ## Stato verificato prima del push
 
 - Canvas comune con tutti i nodi trascinabili, locale incluso. Test mouse/touch a

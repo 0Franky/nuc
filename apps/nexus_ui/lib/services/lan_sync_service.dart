@@ -5,11 +5,11 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'logger_service.dart';
 import 'shared_topology.dart';
+import 'proximity_monitor.dart';
 import 'nexus_ffi_bridge.dart';
 import '../models/models.dart';
 
@@ -44,6 +44,8 @@ class LanSyncService extends ChangeNotifier {
   List<Map<String, dynamic>> discoveredPeers = [];
   bool isConnected = false;
   final Map<String, String> _inputErrors = {};
+  final Map<String, ({String target, Completer<String?> reply})> _pendingText = {};
+  int _textRequestSequence = 0;
   String? get inputError => _inputErrors[selectedTargetDeviceId ?? deviceId];
   String? inputErrorFor(String id) => _inputErrors[id];
 
@@ -70,15 +72,16 @@ class LanSyncService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _sendInput(Map<String, dynamic> message, String? targetId) {
+  bool _sendInput(Map<String, dynamic> message, String? targetId) {
     final id = targetId == null || targetId.isEmpty ? selectedTargetDeviceId ?? deviceId : targetId;
     final socket = socketForDevice(targetId);
     if (socket == null || !_socketPeerIds.containsValue(id)) {
       _setInputError(id, 'Connessione diretta al PC non disponibile. Attendi la connessione o seleziona un altro PC.');
-      return;
+      return false;
     }
     try { socket.add(_encodeForDevice(message, targetId)); }
-    catch (_) { _setInputError(id, 'Invio input non riuscito: connessione interrotta.'); }
+    catch (_) { _setInputError(id, 'Invio input non riuscito: connessione interrotta.'); return false; }
+    return true;
   }
 
 
@@ -125,6 +128,18 @@ class LanSyncService extends ChangeNotifier {
     }
   }
 
+  static bool _legacyBleIdentity(String id) =>
+      RegExp(r'^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$').hasMatch(id) ||
+      id == 'auto-ble-peer' || id.startsWith('Peer BLE (');
+
+  SharedTopology? _cleanLegacyBleTopology(SharedTopology? topology) {
+    if (topology == null || !topology.points.keys.any(_legacyBleIdentity)) return topology;
+    final points = Map<String, Offset>.from(topology.points)..removeWhere((id, _) => _legacyBleIdentity(id));
+    if (points.isEmpty || !points.containsKey(topology.author)) return null;
+    return SharedTopology(topology.revision + 1,
+        points.containsKey(deviceId) ? deviceId : topology.author, points);
+  }
+
   void registerOrUpdatePeer({
     required String id,
     required String name,
@@ -137,7 +152,7 @@ class LanSyncService extends ChangeNotifier {
     Map<String, dynamic>? sharedInput,
     bool updateSharedInput = false,
   }) {
-    if (id.isEmpty || id == deviceId) return;
+    if (id.isEmpty || id == deviceId || _legacyBleIdentity(id)) return;
     if (ip != null && _localIps.contains(ip)) return;
     _knownPeerIds.add(id);
     final online = !discoveryOnly || socketForDevice(id) != null;
@@ -292,7 +307,15 @@ class LanSyncService extends ChangeNotifier {
   String? proximityMotion; // Null until real live signal received
   double? estimatedDistanceMeters; // Null until real BLE distance measured
   int? liveRssi;
-  bool autoLockOnWalkAway = true;
+  bool autoLockOnWalkAway = false;
+  final proximity = ProximityMonitor();
+  String? proximityPeerId;
+  final Map<String, double> _proximityCalibration = {};
+  int _lastBleSequence = -1;
+  bool? _bleMonitoringApplied;
+  String bleScanStatus = "disabled";
+  String? bleScanError;
+  String? proximityLockError;
   bool autoPauseMediaOnWalkAway = true;
   bool wakeOnApproach = true;
   bool universalControlActive = false;
@@ -469,14 +492,29 @@ class LanSyncService extends ChangeNotifier {
           customDeviceOffsets[entry.key as String] = Offset((value[0] as num).toDouble(), (value[1] as num).toDouble());
         }
       }
-      _sharedTopology = SharedTopology.parse(jsonDecode(prefs.getString('shared_topology_v1') ?? 'null'));
+      _sharedTopology = _cleanLegacyBleTopology(SharedTopology.parse(jsonDecode(prefs.getString('shared_topology_v1') ?? 'null')));
+      customDeviceOffsets.removeWhere((id, _) => _legacyBleIdentity(id));
       _projectTopology();
       _customDeviceName = prefs.getString('nexus_custom_device_name') ?? "";
 
       walkAwayThresholdMeters = prefs.getDouble('proximity_walk_away_threshold') ?? 2.2;
       returnThresholdMeters = prefs.getDouble('proximity_return_threshold') ?? 1.2;
       autoLockThresholdMeters = prefs.getDouble('proximity_autolock_threshold') ?? 3.0;
-      autoLockOnWalkAway = prefs.getBool('autoLockOnWalkAway') ?? true;
+      // The old key was enabled by default: it cannot establish explicit consent.
+      autoLockOnWalkAway = prefs.getBool('proximity_lock_opt_in_v2') ?? false;
+      proximityPeerId = prefs.getString('proximity_peer_v2');
+      _proximityCalibration.clear();
+      final calibration = jsonDecode(prefs.getString('proximity_calibration_v2') ?? '{}');
+      if (calibration is Map) {
+        for (final entry in calibration.entries) {
+          if (entry.key is String && entry.value is num &&
+              entry.value.isFinite && entry.value < 0 && entry.value >= -127) {
+            _proximityCalibration[entry.key as String] = (entry.value as num).toDouble();
+          }
+        }
+      }
+      proximity.reset(peer: proximityPeerId, reference: _proximityCalibration[proximityPeerId]);
+      NexusFfiBridge.instance.setProximityLockEnabled(autoLockOnWalkAway);
       autoPauseMediaOnWalkAway = prefs.getBool('autoPauseMediaOnWalkAway') ?? true;
       wakeOnApproach = prefs.getBool('wakeOnApproach') ?? true;
       bleSpatialAutoDetect = prefs.getBool('bleSpatialAutoDetect') ?? true;
@@ -495,6 +533,8 @@ class LanSyncService extends ChangeNotifier {
   }
 
   Future<void> setReturnThreshold(double meters) async {
+    if (!meters.isFinite || meters <= 0 || meters >= autoLockThresholdMeters) return;
+    proximity.resetLock();
     returnThresholdMeters = meters;
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -503,6 +543,8 @@ class LanSyncService extends ChangeNotifier {
   }
 
   Future<void> setAutoLockThreshold(double meters) async {
+    if (!meters.isFinite || meters <= returnThresholdMeters) return;
+    proximity.resetLock();
     autoLockThresholdMeters = meters;
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -517,20 +559,7 @@ class LanSyncService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Timer? _spatialScanTimer;
-  int consecutiveUnchangedScans = 0;
-  bool isTopologyScanActive = false;
-  String? _lastScanTopologyResult;
-
-  // Rate limiter & flapping protection (max 2 scan restarts in 5 minutes)
-  bool isAutoScanSuppressedDueToFlapping = false;
-  String? scanFlappingWarningMessage;
-  final List<DateTime> _scanRestartTimestamps = [];
-
-  // New peer detection & battery protection
   final Set<String> _knownPeerIds = {};
-  Timer? _newDeviceScanDebounceTimer;
-  DateTime? _lastPeerScanTriggerTime;
 
   double currentVolume = 0.85;
   bool isAudioMuted = false;
@@ -589,12 +618,6 @@ class LanSyncService extends ChangeNotifier {
 
   Timer? _btWatcherTimer;
 
-  // Physical sensors tracking (accelerometer/tilt)
-  StreamSubscription<AccelerometerEvent>? _accelSub;
-  double _lastAccelX = 0.0;
-  double _integratedLateralImpulse = 0.0;
-  DateTime? _lastLateralMoveTime;
-
   RawDatagramSocket? _udpListenerSocket;
 
   LanSyncService._();
@@ -610,7 +633,6 @@ class LanSyncService extends ChangeNotifier {
     _startPeriodicDiscovery();
     _startClipboardWatcher();
     _startBluetoothHardwareWatcher();
-    _startSensorsListener();
   }
 
   void _startUdpBeaconListener() async {
@@ -664,31 +686,6 @@ class LanSyncService extends ChangeNotifier {
     }
   }
 
-  void _startSensorsListener() {
-    if (Platform.isAndroid || Platform.isIOS) {
-      try {
-        _accelSub = accelerometerEventStream().listen((event) {
-          _lastAccelX = event.x;
-
-          // Lateral movement threshold: moving phone left/right on desk
-          if (event.x.abs() > 1.2) {
-            _integratedLateralImpulse = event.x;
-            _lastLateralMoveTime = DateTime.now();
-          }
-        }, onError: (e) {
-          NexusLogger.log("SENSORS", "Accelerometer stream non-fatal: $e");
-        });
-      } catch (e) {
-        NexusLogger.log("SENSORS", "Failed to start accelerometer: $e");
-      }
-    }
-  }
-
-  void stopSensorsListener() {
-    _accelSub?.cancel();
-    _accelSub = null;
-  }
-
   void _setupNativeBleChannel() {
     if (Platform.isAndroid) {
       _hardwareChannel.setMethodCallHandler((call) async {
@@ -698,8 +695,9 @@ class LanSyncService extends ChangeNotifier {
           final addr = args?['address'] as String? ?? '';
           final name = args?['name'] as String? ?? '';
           final isNexus = args?['is_nexus'] as bool? ?? false;
+          final peerId = args?['peer_id'] as String?;
           if (rssi != null) {
-            handleIncomingBleRssi(rssi, address: addr, name: name, isNexus: isNexus);
+            handleIncomingBleRssi(rssi, address: addr, name: name, isNexus: isNexus, peerId: peerId);
           }
         } else if (call.method == 'onRemoteMediaAction') {
           final action = call.arguments as String? ?? '';
@@ -767,6 +765,7 @@ class LanSyncService extends ChangeNotifier {
     _btWatcherTimer?.cancel();
     _btWatcherTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       checkBluetoothHardwareStatus();
+      pollBleObservations();
     });
   }
 
@@ -775,7 +774,7 @@ class LanSyncService extends ChangeNotifier {
   /// Real OS-level radio hardware detection (no mocks, no simulations)
   Future<void> checkBluetoothHardwareStatus() async {
     bool isEnabled = false;
-    if (Platform.isWindows) {
+    if (Platform.isWindows || Platform.isLinux) {
       isEnabled = NexusFfiBridge.instance.isBluetoothEnabled();
     } else if (Platform.isAndroid) {
       try {
@@ -791,24 +790,19 @@ class LanSyncService extends ChangeNotifier {
 
     if (isBleHardwareAvailable != isEnabled) {
       isBleHardwareAvailable = isEnabled;
+
       NexusLogger.log("BLUETOOTH_HW", "Real OS Bluetooth radio hardware updated: isEnabled=$isEnabled");
       if (isEnabled) {
-        if (Platform.isAndroid) {
-          _hardwareChannel.invokeMethod('startBleProximity');
-        }
-        if (bleSpatialAutoDetect && !isAutoScanSuppressedDueToFlapping) {
-          restartSpatialTopologyScan(isManual: true);
-        }
+
+
       } else {
-        if (Platform.isAndroid) {
-          _hardwareChannel.invokeMethod('stopBleProximity');
-        }
-        _stopSpatialTopologyScanLoop();
+
         estimatedDistanceMeters = null;
         liveRssi = null;
         proximityMotion = null;
       }
     }
+    _applyBleMonitoring();
   }
 
   Future<void> openBluetoothSettings() async {
@@ -1035,6 +1029,11 @@ class LanSyncService extends ChangeNotifier {
               final responseId = json['device_id'] as String?;
               final id = responseId != null && (_socketPeerIds[ip] == responseId || (_peerRoutes[responseId]?.contains(ip) ?? false)) ? responseId : _socketPeerIds[ip];
               if (id != null) _setInputError(id, json['ok'] == true ? null : json['message'] as String? ?? 'Input non disponibile.');
+              final pending = _pendingText[json['request_id']];
+              if (pending != null && pending.target == id && !pending.reply.isCompleted) {
+                pending.reply.complete(json['ok'] == true ? null :
+                    json['message'] as String? ?? 'Digitazione non riuscita.');
+              }
               return;
             }
             if (json['type'] == 'PEER_DISCONNECTED') {
@@ -1053,6 +1052,7 @@ class LanSyncService extends ChangeNotifier {
                 (inputType.startsWith('TOUCHPAD_') || inputType.startsWith('KEYBOARD_') || json['action'] != null)) {
               ws.add(jsonEncode({
                 'type': 'INPUT_STATUS', 'ok': false, 'device_id': deviceId,
+                if (json['request_id'] is String) 'request_id': json['request_id'],
                 'message': 'Questo comando richiede una connessione diretta al backend del PC.',
               }));
               return;
@@ -1336,7 +1336,7 @@ class LanSyncService extends ChangeNotifier {
               final incoming = SharedTopology.parse(json['topology']);
               if (knownSender && incoming != null && incoming.points.containsKey(deviceId) &&
                   incoming.newerThan(_sharedTopology)) {
-                _sharedTopology = incoming;
+                _sharedTopology = _cleanLegacyBleTopology(incoming);
                 _projectTopology();
                 unawaited(_saveTopology());
                 _broadcastTopology();
@@ -1401,24 +1401,13 @@ class LanSyncService extends ChangeNotifier {
                   if (newRoute) _broadcastTopology();
                 }
               }
-              if (bleSpatialAutoDetect && isBleHardwareAvailable && estimatedDistanceMeters != null) {
-                autoDetermineSpatialPosition(peerType: peerType);
-              }
               _topologyController.add(json);
               return;
             }
 
             if (json['type'] == 'PROXIMITY_UPDATE') {
-              proximityMotion = json['motion'] as String? ?? proximityMotion;
-              final d = (json['distance_m'] as num?)?.toDouble();
-              if (d != null) {
-                estimatedDistanceMeters = d;
-                if (bleSpatialAutoDetect && isBleHardwareAvailable) {
-                  autoDetermineSpatialPosition(distanceMeters: estimatedDistanceMeters);
-                }
-                _checkProximityWalkAway(d, proximityMotion);
-              }
-              _proximityController.add(json);
+              // Legacy frames contain an unscoped estimate, not a local observation.
+              // Never let another computer's distance drive this machine's policy.
               return;
             }
 
@@ -1753,257 +1742,153 @@ class LanSyncService extends ChangeNotifier {
     }
   }
 
+  void _applyBleMonitoring() {
+    final active = isBleHardwareAvailable && bleSpatialAutoDetect;
+    if (_bleMonitoringApplied == active) return;
+    _bleMonitoringApplied = active;
+    NexusFfiBridge.instance.setBleScanningEnabled(active);
+    if (Platform.isAndroid) {
+      unawaited(_hardwareChannel.invokeMethod(active ? 'startBleProximity' : 'stopBleProximity',
+          active ? {'device_id': deviceId} : null).catchError((Object e) {
+        bleScanError = 'Bluetooth non disponibile: $e';
+        notifyListeners();
+      }));
+    }
+    if (!active) {
+      proximity.reset(peer: proximityPeerId, reference: _proximityCalibration[proximityPeerId]);
+      estimatedDistanceMeters = null;
+      liveRssi = null;
+      proximityMotion = null;
+    }
+    notifyListeners();
+  }
+
   void setBleSpatialAutoDetect(bool enabled) {
     bleSpatialAutoDetect = enabled;
-    if (enabled) {
-      isAutoScanSuppressedDueToFlapping = false;
-      scanFlappingWarningMessage = null;
-      _scanRestartTimestamps.clear();
-      if (isBleHardwareAvailable) {
-        _startSpatialTopologyScanLoop();
-      }
-    } else {
-      _stopSpatialTopologyScanLoop();
-    }
+    _applyBleMonitoring();
+    unawaited(saveSettingBool('bleSpatialAutoDetect', enabled));
+    notifyListeners();
   }
 
-  void restartSpatialTopologyScan({bool isManual = false}) {
-    if (isManual) {
-      isAutoScanSuppressedDueToFlapping = false;
-      scanFlappingWarningMessage = null;
-      _scanRestartTimestamps.clear();
-      bleSpatialAutoDetect = true;
-    }
+  bool get hasProximityPeer => proximityPeerId != null && discoveredPeers.any(
+      (p) => p['id'] == proximityPeerId && p['online'] == true);
 
-    if (isAutoScanSuppressedDueToFlapping) {
-      NexusLogger.log("BLE_SPATIAL", "Automatic topology scan suppressed due to excessive flapping (>2 in 5m).");
+  String get proximityStatus {
+    if (!bleSpatialAutoDetect) return 'Monitoraggio Bluetooth disattivato';
+    if (proximityPeerId == null) return 'Scegli il dispositivo da monitorare';
+    if (!hasProximityPeer) return 'Dispositivo selezionato non connesso';
+    if (!proximity.isFresh(DateTime.now())) {
+      if (bleScanError != null) return bleScanError!;
+      return 'Nessun segnale BLE Nexus identificato recente';
+    }
+    if (proximity.referenceRssi == null) return 'Segnale ricevuto: calibrazione a 1 metro necessaria';
+    return 'Stima BLE indicativa, sensibile a ostacoli e orientamento';
+  }
+
+  Future<void> setProximityPeer(String? id) async {
+    proximityPeerId = id;
+    proximity.reset(peer: id, reference: _proximityCalibration[id]);
+    estimatedDistanceMeters = null;
+    liveRssi = null;
+    proximityMotion = null;
+    _isDeparted = false;
+    _hasFiredDepartureAlert = false;
+    final prefs = await SharedPreferences.getInstance();
+    if (id == null) {
+      await prefs.remove('proximity_peer_v2');
+    } else {
+      await prefs.setString('proximity_peer_v2', id);
+    }
+    notifyListeners();
+  }
+
+  Future<bool> calibrateProximityAtOneMeter() async {
+    if (!hasProximityPeer) return false;
+    final reference = proximity.calibrateAtOneMeter(DateTime.now());
+    if (reference == null) return false;
+    _proximityCalibration[proximityPeerId!] = reference;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('proximity_calibration_v2', jsonEncode(_proximityCalibration));
+    estimatedDistanceMeters = proximity.distance(DateTime.now());
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> setAutoLockOnWalkAway(bool enabled) async {
+    autoLockOnWalkAway = enabled;
+    proximityLockError = null;
+    proximity.resetLock();
+    NexusFfiBridge.instance.setProximityLockEnabled(enabled);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('proximity_lock_opt_in_v2', enabled);
+    notifyListeners();
+  }
+
+  void handleIncomingBleRssi(double rawRssi, {String? address, String? name,
+      bool? isNexus, String? peerId, DateTime? observedAt, bool evaluate = true}) {
+    // A rotating radio address and a product name are not Nexus peer identities.
+    if (!isBleHardwareAvailable || !bleSpatialAutoDetect || isNexus != true || peerId == null || peerId != proximityPeerId ||
+        !hasProximityPeer || peerId == deviceId) {
       return;
     }
-
-    if (!isManual) {
-      final now = DateTime.now();
-      _scanRestartTimestamps.removeWhere((t) => now.difference(t).inSeconds > 300);
-      if (_scanRestartTimestamps.length >= 2) {
-        // Exceeded 2 changes in 5 minutes! Permanently suppress auto-scanning to protect resources!
-        isAutoScanSuppressedDueToFlapping = true;
-        bleSpatialAutoDetect = false;
-        _stopSpatialTopologyScanLoop();
-        scanFlappingWarningMessage = "Scansione automatica disattivata per saturazione: rilevate più di 2 variazioni in 5 minuti. Usa RISCANSIONA per riattivare.";
-        NexusLogger.log("BLE_SPATIAL", "FLAPPING DETECTED (>2 in 5m). Auto topology scan permanently disabled.");
-        _proximityController.add({
-          "type": "SCAN_FLAPPING_SUPPRESSED",
-          "message": scanFlappingWarningMessage,
-        });
-        return;
-      }
-      _scanRestartTimestamps.add(now);
-    }
-
-    if (bleSpatialAutoDetect && isBleHardwareAvailable) {
-      _startSpatialTopologyScanLoop();
-    }
-  }
-
-  void _startSpatialTopologyScanLoop() {
-    _spatialScanTimer?.cancel();
-    consecutiveUnchangedScans = 0;
-    isTopologyScanActive = true;
-    _lastScanTopologyResult = spatialPosition;
-
-    // Run first scan immediately
-    _performSpatialScanStep();
-
-    // Run periodic scan every 4 seconds
-    _spatialScanTimer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (!bleSpatialAutoDetect || !isBleHardwareAvailable) {
-        _stopSpatialTopologyScanLoop();
-        return;
-      }
-
-      if (!isTopologyScanActive) {
-        // Topology scan has stabilized after 3 identical cycles,
-        // BUT BLE distance & walk-away monitoring remains 100% active in background!
-        return;
-      }
-
-      _performSpatialScanStep();
-    });
-  }
-
-  void _stopSpatialTopologyScanLoop() {
-    _spatialScanTimer?.cancel();
-    _spatialScanTimer = null;
-    isTopologyScanActive = false;
-    consecutiveUnchangedScans = 0;
-  }
-
-  void _performSpatialScanStep() {
-    final dist = estimatedDistanceMeters;
-    if (dist == null) return;
-
-    final detectedPos = autoDetermineSpatialPosition(distanceMeters: dist);
-    if (detectedPos == null) return;
-
-    if (detectedPos != _lastScanTopologyResult) {
-      consecutiveUnchangedScans = 0;
-      _lastScanTopologyResult = detectedPos;
-      NexusLogger.log("BLE_SPATIAL", "Topology scan update detected: '$detectedPos'. Resetting scan counter.");
-    } else {
-      consecutiveUnchangedScans++;
-      NexusLogger.log("BLE_SPATIAL", "Topology scan unchanged: '$detectedPos' ($consecutiveUnchangedScans/3).");
-      if (consecutiveUnchangedScans >= 3) {
-        // Stop active topology scanning after 3 consecutive scans!
-        isTopologyScanActive = false;
-        NexusLogger.log("BLE_SPATIAL", "Topology scan stabilized after 3 consecutive scans. Topology scanning paused (BLE proximity checking remains 100% active).");
-      }
-    }
-  }
-
-  /// Automatically determines peer spatial position using physical sensor fusion (accelerometer/tilt) and BLE distance
-  String? autoDetermineSpatialPosition({double? distanceMeters, String? peerType}) {
-    if (topologySyncEnabled) return null;
-    if (!bleSpatialAutoDetect || !isBleHardwareAvailable) return null;
-    final dist = distanceMeters ?? estimatedDistanceMeters;
-    if (dist == null) return null;
-
-    String newPos = spatialPosition;
-
-    // 1. Evaluate recent physical lateral movement impulses (sliding or moving phone across desk)
     final now = DateTime.now();
-    final hasRecentLateralMove = _lastLateralMoveTime != null && now.difference(_lastLateralMoveTime!).inSeconds < 12;
-
-    if (hasRecentLateralMove) {
-      if (_integratedLateralImpulse > 1.3) {
-        newPos = "Right";
-      } else if (_integratedLateralImpulse < -1.3) {
-        newPos = "Left";
-      }
-    } else {
-      // Retain current position, avoid flipping based merely on phone rotation/tilt
-      newPos = spatialPosition;
-    }
-
-    if (spatialPosition != newPos) {
-      spatialPosition = newPos;
-      lastAutoDeterminedPosition = newPos;
-      sendSpatialArrangement("auto-ble-peer", newPos);
-      _topologyController.add({
-        "type": "TOPOLOGY_UPDATE",
-        "position": newPos,
-        "distance": dist,
-      });
-      NexusLogger.log("BLE_SPATIAL", "Auto-determined spatial position: $newPos (dist: ${dist.toStringAsFixed(1)}m, tiltX: ${_lastAccelX.toStringAsFixed(1)}, accelImpulse: ${_integratedLateralImpulse.toStringAsFixed(1)})");
-    }
-
-    return newPos;
+    if (!proximity.add(peerId, rawRssi, observedAt ?? now)) return;
+    if (evaluate) _evaluateProximity();
   }
 
-  void checkNewDeviceIntroduced(String deviceId, String deviceName) {
-    if (deviceId.isEmpty) return;
-    final isNew = _knownPeerIds.add(deviceId);
-    if (isNew) {
-      NexusLogger.log("PEER_DISCOVERY", "New device detected and attached: $deviceName (ID/MAC: $deviceId)");
+  void _evaluateProximity() {
+    final now = DateTime.now();
+    if (!proximity.isFresh(now) || !hasProximityPeer) return;
+    liveRssi = proximity.filteredRssi!.round();
+    estimatedDistanceMeters = proximity.distance(now);
+    proximityMotion = null;
+    final distance = estimatedDistanceMeters;
+    if (proximity.shouldLock(now: now, enabled: autoLockOnWalkAway,
+        threshold: autoLockThresholdMeters, returnThreshold: returnThresholdMeters)) {
+      final result = NexusFfiBridge.instance.lockForProximity();
+      proximityLockError = result == 0 ? null :
+          'Blocco non eseguito: backend di sistema non disponibile o consenso non attivo (codice $result).';
+      NexusLogger.log('PROXIMITY', 'Local calibrated departure lock result: $result');
+    }
+    if (distance != null) { _checkProximityWalkAway(distance, null); }
+    _proximityController.add({'type': 'PROXIMITY_UPDATE', 'peer_id': proximityPeerId,
+      'distance_m': distance, 'rssi': liveRssi});
+    notifyListeners();
+  }
 
-      // Add to discoveredPeers if not present
-      if (!discoveredPeers.any((p) => p['id'] == deviceId || p['mac'] == deviceId || p['ip'] == deviceId)) {
-        discoveredPeers.add({
-          "id": deviceId,
-          "name": deviceName,
-          "online": true,
-          "device_type": deviceName.toLowerCase().contains("phone") || deviceName.toLowerCase().contains("smartphone") ? "Mobile" : "Desktop",
-          "spatial_position": "Left",
-        });
-      }
-
-      // If topology was consolidated (not actively scanning), schedule a new scan to integrate the new device!
-      if (bleSpatialAutoDetect && isBleHardwareAvailable && !isTopologyScanActive && !isAutoScanSuppressedDueToFlapping) {
-        final now = DateTime.now();
-        if (_lastPeerScanTriggerTime != null && now.difference(_lastPeerScanTriggerTime!).inSeconds < 30) {
-          NexusLogger.log("BLE_SPATIAL", "Throttling new-peer scan (last scan triggered < 30s ago).");
-          return;
+  void pollBleObservations() {
+    final native = NexusFfiBridge.instance.getBleObservations();
+    bleScanStatus = native['ble_scan_status'] as String? ?? 'unavailable';
+    bleScanError = native['ble_scan_error'] as String?;
+    final samples = native['ble_samples'];
+    final previousSequence = _lastBleSequence;
+    if (samples is List) {
+      // Each observation is consumed once; repeated UI polling cannot create samples.
+      final fresh = samples.whereType<Map>().toList()
+        ..sort((a, b) => ((a['sequence'] as num?) ?? -1).compareTo((b['sequence'] as num?) ?? -1));
+      for (final sample in fresh) {
+        final sequence = (sample['sequence'] as num?)?.toInt();
+        final at = (sample['observed_at_ms'] as num?)?.toInt();
+        if (sequence == null || sequence <= _lastBleSequence) continue;
+        _lastBleSequence = sequence;
+        final age = at == null ? -1 : DateTime.now().millisecondsSinceEpoch - at;
+        if (age < 0 || age > ProximityMonitor.freshness.inMilliseconds) continue;
+        final rssi = (sample['rssi'] as num?)?.toDouble();
+        if (rssi != null) {
+          handleIncomingBleRssi(rssi, peerId: sample['peer_id'] as String?,
+            isNexus: true, observedAt: DateTime.fromMillisecondsSinceEpoch(at!), evaluate: false);
         }
-
-        _newDeviceScanDebounceTimer?.cancel();
-        _newDeviceScanDebounceTimer = Timer(const Duration(milliseconds: 2000), () {
-          _lastPeerScanTriggerTime = DateTime.now();
-          NexusLogger.log("BLE_SPATIAL", "Starting topology scan for newly attached device ($deviceName) until convergence.");
-          restartSpatialTopologyScan(isManual: false);
-        });
       }
     }
-  }
-
-  double _filteredRssi = -60.0;
-  final List<double> _rssiHistory = [];
-
-  void handleIncomingBleRssi(double rawRssi, {String? address, String? name, bool? isNexus}) {
-    if (address != null && address.isNotEmpty) {
-      checkNewDeviceIntroduced(address, name?.isNotEmpty == true ? name! : 'Peer BLE ($address)');
+    if (_lastBleSequence != previousSequence) _evaluateProximity();
+    if (!hasProximityPeer || !proximity.isFresh(DateTime.now())) {
+      final hadReading = estimatedDistanceMeters != null || liveRssi != null;
+      estimatedDistanceMeters = null;
+      liveRssi = null;
+      proximityMotion = null;
+      proximity.reset(peer: proximityPeerId, reference: _proximityCalibration[proximityPeerId]);
+      if (hadReading) notifyListeners();
     }
-    liveRssi = rawRssi.round();
-    if (_rssiHistory.isEmpty) {
-      _filteredRssi = rawRssi;
-    } else {
-      const kalmanGain = 0.35;
-      _filteredRssi = _filteredRssi + kalmanGain * (rawRssi - _filteredRssi);
-    }
-    _rssiHistory.add(_filteredRssi);
-    if (_rssiHistory.length > 8) _rssiHistory.removeAt(0);
-
-    // Calculate motion vector from RSSI trend
-    if (_rssiHistory.length >= 3) {
-      final delta = _rssiHistory.last - _rssiHistory.first;
-      if (delta > 2.5) {
-        proximityMotion = "Approaching";
-      } else if (delta < -2.5) {
-        proximityMotion = "MovingAway";
-      } else {
-        proximityMotion = "Stationary";
-      }
-    }
-
-    // Log-distance path loss model: distance = 10^((txPower - rssi) / (10 * n))
-    const txPower = -59.0;
-    const pathLossExponent = 2.2;
-    final ratio = (txPower - _filteredRssi) / (10.0 * pathLossExponent);
-    final calculatedDistance = math.pow(10.0, ratio).toDouble().clamp(0.2, 25.0);
-
-    final prevDist = estimatedDistanceMeters;
-    estimatedDistanceMeters = calculatedDistance;
-
-    // Check walk-away triggers (auto-pause PC & show prompt)
-    _checkProximityWalkAway(calculatedDistance, proximityMotion);
-
-    // If distance changed significantly (> 0.8m) or motion indicates moving away/approaching,
-    // and scan was stabilized, restart topology scan loop if not suppressed!
-    if (bleSpatialAutoDetect && isBleHardwareAvailable && !isTopologyScanActive && prevDist != null && !isAutoScanSuppressedDueToFlapping) {
-      final delta = (calculatedDistance - prevDist).abs();
-      final isMoving = proximityMotion == "Approaching" || proximityMotion == "MovingAway";
-      if (delta > 0.8 || (delta > 0.45 && isMoving)) {
-        NexusLogger.log("BLE_SPATIAL", "Distance change detected between devices (delta: ${delta.toStringAsFixed(2)}m, motion: $proximityMotion). Restarting scan to convergence.");
-        restartSpatialTopologyScan(isManual: false);
-      }
-    }
-
-    // If connected via WebSocket, send PROXIMITY_UPDATE to PC
-    if (_ws != null && isConnected) {
-      final msg = {
-        "type": "PROXIMITY_UPDATE",
-        "distance_m": calculatedDistance,
-        "motion": proximityMotion ?? "Stationary",
-        "rssi": _filteredRssi.round(),
-      };
-      try {
-        _ws!.add(jsonEncode(msg));
-      } catch (_) {}
-    }
-
-    _proximityController.add({
-      "type": "PROXIMITY_UPDATE",
-      "distance_m": calculatedDistance,
-      "motion": proximityMotion,
-      "rssi": _filteredRssi.round(),
-    });
   }
 
   void sendUniversalControlHop(int entryX, int entryY, int screenWidth, int screenHeight) {
@@ -2035,6 +1920,7 @@ class LanSyncService extends ChangeNotifier {
   }
 
   void sendProximityTrigger(String action) {
+    if (action == 'LOCK_WORKSTATION') return;
     if (_ws != null && isConnected) {
       final msg = {
         "type": "PROXIMITY_TRIGGER",
@@ -2046,7 +1932,6 @@ class LanSyncService extends ChangeNotifier {
     }
   }
 
-  int _lastLockTriggerTime = 0;
   int _lastWalkAwayPromptTime = 0;
   int _lastReturnWelcomeTime = 0;
   bool _isDeparted = false;
@@ -2054,15 +1939,6 @@ class LanSyncService extends ChangeNotifier {
 
   void _checkProximityWalkAway(double distanceMeters, String? motion) {
     final now = DateTime.now().millisecondsSinceEpoch;
-
-    // 1. Walk-away Workstation Lock
-    if (autoLockOnWalkAway && distanceMeters > autoLockThresholdMeters) {
-      if (now - _lastLockTriggerTime > 12000) {
-        _lastLockTriggerTime = now;
-        NexusLogger.log("PROXIMITY", "Distance ${distanceMeters.toStringAsFixed(1)}m > ${autoLockThresholdMeters.toStringAsFixed(1)}m: Triggering LOCK_WORKSTATION");
-        sendProximityTrigger("LOCK_WORKSTATION");
-      }
-    }
 
     // 2. Realistic indoor walk-away thresholds (configurable)
     // MovingAway bias allows triggering slightly earlier when walking fast
@@ -2127,7 +2003,7 @@ class LanSyncService extends ChangeNotifier {
   void _triggerWalkAwaySecurityAlert(double distanceMeters) {
     final distStr = distanceMeters.toStringAsFixed(1);
     const title = 'Allontanamento Rilevato';
-    final body = 'Ti sei allontanato da $pcName (${distStr}m). Postazione protetta.';
+    final body = 'Ti sei allontanato da $pcName (${distStr}m). Distanza BLE stimata.';
 
     NexusLogger.log("PROXIMITY", "Walk-away security alert dispatched: $body");
 
@@ -2167,7 +2043,7 @@ class LanSyncService extends ChangeNotifier {
   void _triggerReturnWelcomeAlert(double distanceMeters) {
     final distStr = distanceMeters.toStringAsFixed(1);
     const title = 'Bentornato alla postazione';
-    final body = 'Riconnesso a $pcName (${distStr}m). Postazione sbloccata.';
+    final body = 'Riconnesso a $pcName (${distStr}m). Segnale BLE nuovamente vicino.';
 
     NexusLogger.log("PROXIMITY", "Return welcome alert dispatched: $body");
 
@@ -2294,6 +2170,22 @@ class LanSyncService extends ChangeNotifier {
 
   void sendKeyboardCombo(List<String> keys, {String? targetPeerId}) {
     _sendInput({'type': 'KEYBOARD_COMBO', 'keys': keys}, targetPeerId);
+  }
+
+  Future<String?> sendTextInputConfirmed(String text, {required String targetPeerId}) async {
+    if (text.runes.length > 4096) return 'Invia al massimo 4096 caratteri per volta.';
+    final requestId = '$deviceId-${DateTime.now().microsecondsSinceEpoch}-${_textRequestSequence++}';
+    final reply = Completer<String?>();
+    _pendingText[requestId] = (target: targetPeerId, reply: reply);
+    try {
+      if (!_sendInput({'type': 'KEYBOARD_TEXT', 'text': text, 'request_id': requestId}, targetPeerId)) {
+        return inputErrorFor(targetPeerId) ?? 'Connessione al PC non disponibile.';
+      }
+      return await reply.future.timeout(const Duration(seconds: 40), onTimeout: () =>
+          'Conferma del PC non ricevuta. Il testo potrebbe essere parziale: verifica la finestra di destinazione prima di reinviare.');
+    } finally {
+      _pendingText.remove(requestId);
+    }
   }
 
   void sendTextInput(String text, {String? targetPeerId}) {

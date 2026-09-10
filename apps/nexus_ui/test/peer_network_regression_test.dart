@@ -43,6 +43,25 @@ void main() {
     await until(() => lan.discoveredPeers.length == 2);
     expect(lan.discoveredPeers.map((p) => p['id']), ['linux-host','phone']);
     expect(lan.selectedTargetDeviceId, 'linux-host');
+    var textCompleted = false;
+    final failedText = lan.sendTextInputConfirmed('Kept until ACK', targetPeerId: 'linux-host')
+        .then((result) { textCompleted = true; return result; });
+    await until(() => received.any((m) => m['type'] == 'KEYBOARD_TEXT'));
+    final failedRequest = received.lastWhere((m) => m['type'] == 'KEYBOARD_TEXT')['request_id'];
+    remote.add(jsonEncode({'type':'INPUT_STATUS','device_id':'linux-host','ok':false,
+      'request_id':'unrelated', 'message':'unrelated ACK'}));
+    await until(() => lan.inputError == 'unrelated ACK');
+    expect(textCompleted, isFalse);
+    remote.add(jsonEncode({'type':'INPUT_STATUS','device_id':'linux-host','ok':false,
+      'request_id':failedRequest, 'message':'Authorize the Wayland portal'}));
+    expect(await failedText, 'Authorize the Wayland portal');
+    final successfulText = lan.sendTextInputConfirmed('Confirmed text', targetPeerId: 'linux-host');
+    await until(() => received.where((m) => m['type'] == 'KEYBOARD_TEXT').length == 2);
+    final goodRequest = received.lastWhere((m) => m['type'] == 'KEYBOARD_TEXT')['request_id'];
+    remote.add(jsonEncode({'type':'INPUT_STATUS','device_id':'linux-host','ok':true,
+      'request_id':goodRequest}));
+    expect(await successfulText, isNull);
+
     lan.sendTouchpadDelta(7, -4, targetPeerId: 'linux-host');
     await until(() => received.any((m) => m['type'] == 'TOUCHPAD_DELTA'));
     expect(received.last['target_device_id'], 'linux-host');

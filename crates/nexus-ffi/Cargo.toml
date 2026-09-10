@@ -26,3 +26,10 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 lazy_static = { workspace = true }
 uuid = { workspace = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+btleplug = "0.12"
+futures-util = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9"

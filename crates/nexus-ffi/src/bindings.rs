@@ -55,7 +55,11 @@ pub extern "C" fn nexus_get_state_json() -> *mut c_char {
             let local_ip = get_local_lan_ip();
             let bt_enabled = check_system_bluetooth_enabled();
 
+            let ble_state = engine.ble_monitor.snapshot();
             let state = json!({
+                "ble_samples": ble_state["ble_samples"],
+                "ble_scan_status": ble_state["ble_scan_status"],
+                "ble_scan_error": ble_state["ble_scan_error"],
                 "initialized": true,
                 "device_id": engine.device_id.to_string(),
                 "local_lan_ip": local_ip,
@@ -266,6 +270,61 @@ pub extern "C" fn nexus_classify_clipboard(text: *const c_char) -> *mut c_char {
                 "hint_type": hint.map(|h| format!("{:?}", h)),
             });
             string_to_c(res.to_string())
+        }
+    })
+}
+
+/// Controls native BLE telemetry using the application's Bluetooth monitoring preference.
+#[no_mangle]
+pub extern "C" fn nexus_set_ble_scanning_enabled(enabled: i32) -> i32 {
+    GLOBAL_RUNTIME.block_on(async {
+        let global = GLOBAL_ENGINE.read().await;
+        if let Some(engine) = &*global {
+            engine.ble_monitor.set_enabled(enabled != 0);
+            0
+        } else { -1 }
+    })
+}
+
+/// Returns fresh identified RSSI observations, never discovery peers or estimated metres.
+#[no_mangle]
+pub extern "C" fn nexus_get_ble_state_json() -> *mut c_char {
+    GLOBAL_RUNTIME.block_on(async {
+        let global = GLOBAL_ENGINE.read().await;
+        let state = match &*global {
+            Some(engine) => engine.ble_monitor.snapshot(),
+            None => json!({"ble_samples": [], "ble_scan_status": "uninitialized"}),
+        };
+        string_to_c(state.to_string())
+    })
+}
+
+/// Enables local proximity locking. This does not permit remote lock commands.
+#[no_mangle]
+pub extern "C" fn nexus_set_proximity_lock_enabled(enabled: i32) -> i32 {
+    GLOBAL_RUNTIME.block_on(async {
+        let global = GLOBAL_ENGINE.read().await;
+        if let Some(engine) = &*global {
+            engine.proximity_actor.set_auto_lock_enabled(enabled != 0);
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+/// Executes a decision made by the local calibrated proximity policy.
+/// Returns 0 on success, -1 before initialization, -2 without consent,
+/// and -3 if the operating system could not lock the session.
+#[no_mangle]
+pub extern "C" fn nexus_lock_for_proximity() -> i32 {
+    GLOBAL_RUNTIME.block_on(async {
+        let global = GLOBAL_ENGINE.read().await;
+        let Some(engine) = &*global else { return -1; };
+        match engine.proximity_actor.lock_if_enabled(nexus_plugin_proximity::lock_workstation) {
+            None => -2,
+            Some(true) => 0,
+            Some(false) => -3,
         }
     })
 }

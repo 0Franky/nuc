@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'lan_sync_service.dart';
 import 'logger_service.dart';
 
@@ -30,6 +32,23 @@ class SharedInputService extends ChangeNotifier {
   String? error;
   final Map<String, String> trusted = {};
   String _lastConfig = '';
+  final List<String> diagnostics = [];
+  String _published = '';
+  String get diagnosticReport =>
+      'Sistema: ${Platform.operatingSystem}\n'
+      'Sessione: ${Platform.environment['XDG_SESSION_TYPE'] ?? 'desktop'}\n'
+      'Motore: ${running ? 'connesso' : 'fermo'}\n'
+      'Cattura locale: $captureReady\nRicezione locale: $emulationReady\n'
+      'Stato: $status\n${diagnostics.join('\n')}';
+
+  void _diagnostic(String message) {
+    final clean = message.replaceAll(RegExp(r'\x1B\[[0-9;]*m'), '');
+    if (diagnostics.isNotEmpty && diagnostics.last == clean) return;
+    diagnostics.add(clean);
+    if (diagnostics.length > 12) diagnostics.removeAt(0);
+    notifyListeners();
+  }
+
   Future<void> _writes = Future.value();
   Directory? _directory;
   bool get supported => Platform.isWindows || Platform.isLinux;
@@ -42,10 +61,13 @@ class SharedInputService extends ChangeNotifier {
           ? 'Input condiviso disattivato'
           : !running
           ? 'Backend non avviato'
-          : Platform.isLinux && Platform.environment['XDG_SESSION_TYPE'] == 'x11' && !captureReady && emulationReady
+          : Platform.isLinux &&
+                Platform.environment['XDG_SESSION_TYPE'] == 'x11' &&
+                !captureReady &&
+                emulationReady
           ? 'Emulazione pronta; cattura mouse e tastiera non disponibile in X11'
           : !captureReady || !emulationReady
-          ? 'In attesa dei permessi del desktop'
+          ? 'Cattura locale: ${captureReady ? 'pronta' : 'non pronta'} • Ricezione: ${emulationReady ? 'pronta' : 'non pronta'}. Su Linux completa il consenso del desktop.'
           : 'Mouse e tastiera pronti • Ctrl + Alt + Shift + Win/Super per tornare in locale');
 
   Future<void> initialize(LanSyncService lan) async {
@@ -129,7 +151,8 @@ class SharedInputService extends ChangeNotifier {
       if (metadata is! Map ||
           approved[id] == null ||
           metadata['fingerprint'] != approved[id] ||
-          peer['online'] != true) {
+          peer['online'] != true ||
+          metadata['emulation_ready'] != true) {
         continue;
       }
       final ip = InternetAddress.tryParse(peer['ip'] as String? ?? '');
@@ -185,6 +208,7 @@ class SharedInputService extends ChangeNotifier {
           (p) =>
               p['online'] == true &&
               _validEndpoint(p) &&
+              (p['shared_input'] as Map?)?['emulation_ready'] == true &&
               LanSyncService.isDesktopPeer(p) &&
               approved[p['id']] != null &&
               (p['shared_input'] as Map?)?['fingerprint'] ==
@@ -217,9 +241,8 @@ class SharedInputService extends ChangeNotifier {
     if (config == _lastConfig) return;
     // The upstream watcher ignores malformed intermediate writes and reads the
     // closed file. Serialize updates so an old topology cannot win a race.
-    await File(
-      '${_directory!.path}/config.toml',
-    ).writeAsString(config, flush: true);
+    await File('${_directory!.path}/config.toml')
+        .writeAsString(config, flush: true);
     _lastConfig = config;
   }
 
@@ -273,6 +296,7 @@ class SharedInputService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('shared_input_enabled', value);
       if (!value) return;
+      diagnostics.clear();
       final base = Platform.isWindows
           ? Platform.environment['LOCALAPPDATA']
           : Platform.environment['XDG_CONFIG_HOME'] ??
@@ -337,6 +361,7 @@ class SharedInputService extends ChangeNotifier {
           .listen((line) {
             if (line.contains('ERROR') || line.contains('WARN')) {
               NexusLogger.log('INPUT_BACKEND', line);
+              _diagnostic(line);
             }
           });
       unawaited(
@@ -347,6 +372,8 @@ class SharedInputService extends ChangeNotifier {
           _ipc?.destroy();
           _ipc = null;
           captureReady = emulationReady = false;
+          enabled = false;
+          _lan!.universalControlActive = false;
           _publish(null);
           error =
               'Backend input terminato ($code). Riattiva la condivisione per riprovare.';
@@ -395,6 +422,7 @@ class SharedInputService extends ChangeNotifier {
     if (!identical(_ipc, socket)) return;
     await _stop();
     enabled = false;
+    _lan!.universalControlActive = false;
     error = message;
     notifyListeners();
   }
@@ -413,7 +441,25 @@ class SharedInputService extends ChangeNotifier {
         fingerprint = event['PublicKeyFingerprint'] as String;
         _publish(fingerprint);
       }
-      if (event['Error'] is String) error = event['Error'] as String;
+      if (event['Error'] is String) {
+        error = event['Error'] as String;
+        _diagnostic(error!);
+      }
+      if (event['ConnectionAttempt'] != null) {
+        _diagnostic(
+          'Connessione rifiutata: autorizza anche il mittente su questo PC.',
+        );
+      }
+      if (event['DeviceConnected'] != null) {
+        _diagnostic('Connessione input autenticata.');
+      }
+      if (event['DeviceEntered'] != null) {
+        _diagnostic('Il puntatore remoto è entrato su questo PC.');
+      }
+      if (event['CaptureStatus'] != null || event['EmulationStatus'] != null) {
+        _diagnostic('Cattura: $captureReady; ricezione: $emulationReady');
+        if (fingerprint != null) _publish(fingerprint);
+      }
       if (captureReady && emulationReady && event['Error'] == null) {
         error = null;
       }
@@ -425,9 +471,19 @@ class SharedInputService extends ChangeNotifier {
   }
 
   void _publish(String? value) {
-    _lan!.sharedInputMetadata = value == null
+    final metadata = value == null
         ? null
-        : {'fingerprint': value, 'port': port, 'engine': 'lan-mouse-0.11.0'};
+        : {
+            'fingerprint': value,
+            'port': port,
+            'engine': 'lan-mouse-0.11.0',
+            'capture_ready': captureReady,
+            'emulation_ready': emulationReady,
+          };
+    final encoded = jsonEncode(metadata);
+    if (_published == encoded) return;
+    _published = encoded;
+    _lan!.sharedInputMetadata = metadata;
     _lan!.broadcastDeviceMetadata();
   }
 

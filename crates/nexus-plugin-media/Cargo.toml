@@ -10,7 +10,6 @@ nexus-crypto = { workspace = true }
 nexus-protocol = { workspace = true }
 nexus-actor-system = { workspace = true }
 nexus-plugin-input = { workspace = true }
-nexus-plugin-proximity = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

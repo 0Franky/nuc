@@ -1,6 +1,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 pub mod bindings;
+pub mod ble;
 pub mod state;
 
 pub use bindings::*;

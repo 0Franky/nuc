@@ -74,6 +74,10 @@ class NexusFfiBridge {
   NexusSetClipboardPrivacyGateDart? _nexusSetClipboardPrivacyGate;
   NexusRevealClipboardSecretDart? _nexusRevealClipboardSecret;
   NexusIsBluetoothEnabledDart? _nexusIsBluetoothEnabled;
+  NexusSetClipboardPrivacyGateDart? _nexusSetProximityLockEnabled;
+  NexusIsBluetoothEnabledDart? _nexusLockForProximity;
+  NexusSetClipboardPrivacyGateDart? _nexusSetBleScanningEnabled;
+  NexusGetStateJsonDart? _nexusGetBleStateJson;
 
   NexusFfiBridge._() {
     _loadLibrary();
@@ -128,6 +132,16 @@ class NexusFfiBridge {
   }
 
   void _bindFunctions(ffi.DynamicLibrary lib) {
+    try {
+      _nexusSetProximityLockEnabled = lib.lookupFunction<NexusSetClipboardPrivacyGateC, NexusSetClipboardPrivacyGateDart>('nexus_set_proximity_lock_enabled');
+      _nexusLockForProximity = lib.lookupFunction<NexusIsBluetoothEnabledC, NexusIsBluetoothEnabledDart>('nexus_lock_for_proximity');
+      _nexusSetBleScanningEnabled = lib.lookupFunction<NexusSetClipboardPrivacyGateC, NexusSetClipboardPrivacyGateDart>('nexus_set_ble_scanning_enabled');
+      _nexusGetBleStateJson = lib.lookupFunction<NexusGetStateJsonC, NexusGetStateJsonDart>('nexus_get_ble_state_json');
+    } catch (_) {
+      _nexusSetProximityLockEnabled = null;
+      _nexusLockForProximity = null;
+      _nexusSetBleScanningEnabled = null;
+    }
     _nexusInit = lib.lookupFunction<NexusInitC, NexusInitDart>('nexus_init');
     _nexusFreeString = lib.lookupFunction<NexusFreeStringC, NexusFreeStringDart>('nexus_free_string');
     _nexusGetStateJson = lib.lookupFunction<NexusGetStateJsonC, NexusGetStateJsonDart>('nexus_get_state_json');
@@ -146,6 +160,24 @@ class NexusFfiBridge {
       _nexusRevealClipboardSecret = lib.lookupFunction<NexusRevealClipboardSecretC, NexusRevealClipboardSecretDart>('nexus_reveal_clipboard_secret');
       _nexusIsBluetoothEnabled = lib.lookupFunction<NexusIsBluetoothEnabledC, NexusIsBluetoothEnabledDart>('nexus_is_bluetooth_enabled');
     } catch (_) {}
+  }
+
+  bool setProximityLockEnabled(bool enabled) =>
+      _nexusSetProximityLockEnabled?.call(enabled ? 1 : 0) == 0;
+
+  int lockForProximity() => _nexusLockForProximity?.call() ?? -1;
+
+  void setBleScanningEnabled(bool enabled) {
+    _nexusSetBleScanningEnabled?.call(enabled ? 1 : 0);
+  }
+
+  Map<String, dynamic> getBleObservations() {
+    final get = _nexusGetBleStateJson;
+    if (get == null || _deviceId == null) return {};
+    final ptr = get();
+    if (ptr == ffi.nullptr) return {};
+    try { return jsonDecode(ptr.toDartString()) as Map<String, dynamic>; }
+    finally { _nexusFreeString!(ptr); }
   }
 
   /// True if the real Rust engine is loaded
@@ -174,6 +206,8 @@ class NexusFfiBridge {
     final id = resPtr.toDartString();
     _nexusFreeString!(resPtr);
     _deviceId = id;
+    setProximityLockEnabled(LanSyncService.instance.autoLockOnWalkAway);
+    setBleScanningEnabled(LanSyncService.instance.isBleHardwareAvailable && LanSyncService.instance.bleSpatialAutoDetect);
     return id;
   }
 

@@ -1,3 +1,9 @@
+> Stato aggiornato: [revisione operativa](../2026-09-10-proximity-input-review.md).
+> La descrizione seguente è una specifica storica, non una garanzia implementativa:
+> BLE RSSI non garantisce precisione né assenza di falsi positivi; blocco oggi OFF
+> salvo consenso locale, peer scelto e calibrato, soglia e conferma temporale.
+> Sblocco biometrico e precisione delle distanze non sono funzionalità verificate.
+
 # 06. Proximity Detection & Auto-Lock (BLE RSSI)
 
 Questo plugin sfrutta le emissioni periodiche di pacchetti Bluetooth Low Energy (BLE) per stimare con precisione la distanza fisica dell'utente rispetto alla propria postazione di lavoro, attivando automazioni contestuali intelligenti.

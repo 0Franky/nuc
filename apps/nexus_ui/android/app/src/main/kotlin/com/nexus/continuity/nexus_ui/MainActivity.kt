@@ -4,11 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -23,8 +19,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.os.ParcelUuid
 import android.provider.Settings
 import android.util.Log
@@ -48,13 +42,8 @@ class MainActivity : FlutterActivity() {
     private var advertiseCallback: AdvertiseCallback? = null
     private var isBleProximityActive = false
 
-    private var targetPeerMac: String = "40:9F:38:A6:80:DE"
-    private var targetPeerName: String = "FRANKY"
-    private var bluetoothGatt: BluetoothGatt? = null
-    private var isDiscoveryReceiverRegistered = false
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private var gattPollRunnable: Runnable? = null
-    private var discoveryLoopRunnable: Runnable? = null
+    private var localBlePeerId: UUID? = null
+    private var bleProximityRequested = false
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -116,21 +105,17 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
-                "setTargetPeerBluetooth" -> {
-                    val mac = call.argument<String>("mac")
-                    val name = call.argument<String>("name")
-                    if (!mac.isNullOrEmpty()) targetPeerMac = mac
-                    if (!name.isNullOrEmpty()) targetPeerName = name
-                    Log.d(TAG, "Updated target peer Bluetooth: MAC=$targetPeerMac, Name=$targetPeerName")
-                    result.success(true)
-                }
                 "startBleProximity" -> {
-                    try {
-                        startBleProximityMonitoring()
-                        result.success(true)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "startBleProximity error", e)
-                        result.success(false)
+                    val rawId = call.argument<String>("device_id")
+                    val id = try { UUID.fromString(rawId) } catch (_: Exception) { null }
+                    if (id == null || !id.toString().equals(rawId, ignoreCase = true) ||
+                        (id.mostSignificantBits == 0L && id.leastSignificantBits == 0L)) {
+                        result.error("invalid_device_id", "A stable Nexus UUID is required", null)
+                    } else {
+                        if (localBlePeerId != id) stopBleProximityMonitoring()
+                        localBlePeerId = id
+                        bleProximityRequested = true
+                        result.success(startBleProximityMonitoring())
                     }
                 }
                 "stopBleProximity" -> {
@@ -359,295 +344,122 @@ class MainActivity : FlutterActivity() {
         notificationManager.cancel(NOTIF_ID_MEDIA_REMOTE)
     }
 
-    private val discoveryReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (BluetoothDevice.ACTION_FOUND == intent?.action) {
-                val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                }
-                val rssi = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE).toInt()
-                if (device != null && rssi != Short.MIN_VALUE.toInt()) {
-                    val addr = device.address ?: ""
-                    val name = device.name ?: ""
-                    val isTarget = addr.equals(targetPeerMac, ignoreCase = true) ||
-                                  name.contains(targetPeerName, ignoreCase = true) ||
-                                  name.contains("Nexus", ignoreCase = true)
-
-                    Log.d(TAG, "ACTION_FOUND: addr=$addr, name='$name', rssi=$rssi dBm, isTarget=$isTarget")
-                    if (isTarget || (targetPeerMac.isEmpty() && rssi > -80)) {
-                        sendRssiSampleToFlutter(rssi, true, name, addr)
-                    }
-                }
-            }
-        }
-    }
-
-    private val gattCallback = object : BluetoothGattCallback() {
-        override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
-            super.onConnectionStateChange(gatt, status, newState)
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d(TAG, "GATT connected to PC ${gatt?.device?.address}")
-                startGattRssiPolling()
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.d(TAG, "GATT disconnected from PC")
-                stopGattRssiPolling()
-            }
-        }
-
-        override fun onReadRemoteRssi(gatt: BluetoothGatt?, rssi: Int, status: Int) {
-            super.onReadRemoteRssi(gatt, rssi, status)
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.d(TAG, "GATT live RSSI sample: $rssi dBm")
-                sendRssiSampleToFlutter(rssi, true, gatt?.device?.name ?: targetPeerName, gatt?.device?.address ?: targetPeerMac)
-            }
-        }
-    }
-
-    private fun sendRssiSampleToFlutter(rssi: Int, isNexus: Boolean, name: String, address: String) {
+    // Version 1 service data carries the same UUID used by LAN discovery.
+    // Never associate devices by a Bluetooth address, friendly name, or signal strength.
+    private fun handleBleScanResult(result: ScanResult) {
+        if (!bleProximityRequested || result.rssi !in -127..-1) return
+        val record = result.scanRecord ?: return
+        val payload = record.getServiceData(ParcelUuid(NEXUS_SERVICE_UUID)) ?: return
+        val peerId = BlePeerIdentity.decode(payload) ?: return
+        if (peerId == localBlePeerId) return
         runOnUiThread {
-            methodChannel?.invokeMethod("onBleRssiSample", mapOf(
-                "rssi" to rssi,
-                "is_nexus" to isNexus,
-                "name" to name,
-                "address" to address
+            if (bleProximityRequested) {
+                methodChannel?.invokeMethod("onBleRssiSample", mapOf(
+                    "rssi" to result.rssi,
+                    "is_nexus" to true,
+                    "peer_id" to peerId.toString()
+                ))
+            }
+        }
+    }
+
+    private fun startBleProximityMonitoring(): Boolean {
+        if (isBleProximityActive) return true
+        val localId = localBlePeerId ?: return false
+        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val adapter = manager?.adapter ?: return false
+        val missing = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            missing.addAll(listOf(
+                android.Manifest.permission.BLUETOOTH_ADVERTISE,
+                android.Manifest.permission.BLUETOOTH_SCAN,
+                android.Manifest.permission.BLUETOOTH_CONNECT
             ))
         }
-    }
-
-    private fun startGattRssiPolling() {
-        stopGattRssiPolling()
-        gattPollRunnable = object : Runnable {
-            override fun run() {
-                try {
-                    bluetoothGatt?.readRemoteRssi()
-                } catch (e: Exception) {
-                    Log.e(TAG, "readRemoteRssi exception", e)
-                }
-                mainHandler.postDelayed(this, 1000)
-            }
+        // Proximity derives physical location, so do not declare neverForLocation.
+        missing.add(android.Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            missing.add(android.Manifest.permission.ACCESS_COARSE_LOCATION)
         }
-        mainHandler.post(gattPollRunnable!!)
-    }
-
-    private fun stopGattRssiPolling() {
-        gattPollRunnable?.let { mainHandler.removeCallbacks(it) }
-        gattPollRunnable = null
-    }
-
-    private fun startBleProximityMonitoring() {
-        if (isBleProximityActive) return
+        missing.removeAll { checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
+            requestPermissions(missing.toTypedArray(), 1001)
+            return false
+        }
+        releaseBleResources()
         try {
-            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-            val adapter = bluetoothManager?.adapter ?: BluetoothAdapter.getDefaultAdapter()
-            if (adapter == null || !adapter.isEnabled) {
-                Log.w(TAG, "Bluetooth adapter not available or disabled")
-                return
-            }
-
-            val parcelUuid = ParcelUuid(NEXUS_SERVICE_UUID)
-
-            // 0. Request BLE & Location permissions if needed
-            val missingPerms = mutableListOf<String>()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_ADVERTISE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    missingPerms.add(android.Manifest.permission.BLUETOOTH_ADVERTISE)
-                }
-                if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    missingPerms.add(android.Manifest.permission.BLUETOOTH_SCAN)
-                }
-                if (checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    missingPerms.add(android.Manifest.permission.BLUETOOTH_CONNECT)
-                }
-            }
-            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                missingPerms.add(android.Manifest.permission.ACCESS_FINE_LOCATION)
-                missingPerms.add(android.Manifest.permission.ACCESS_COARSE_LOCATION)
-            }
-            if (missingPerms.isNotEmpty()) {
-                Log.w(TAG, "Requesting missing runtime permissions: $missingPerms")
-                requestPermissions(missingPerms.toTypedArray(), 1001)
-            }
-
-            // 1. Start BLE Advertiser (isolated try-catch)
-            try {
-                val canAdv = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || checkSelfPermission(android.Manifest.permission.BLUETOOTH_ADVERTISE) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                if (canAdv) {
-                    bleAdvertiser = adapter.bluetoothLeAdvertiser
-                    if (bleAdvertiser != null) {
-                        val advSettings = AdvertiseSettings.Builder()
-                            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-                            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-                            .setConnectable(false)
-                            .setTimeout(0)
-                            .build()
-
-                        val advData = AdvertiseData.Builder()
-                            .addServiceUuid(parcelUuid)
-                            .setIncludeDeviceName(false)
-                            .build()
-
-                        advertiseCallback = object : AdvertiseCallback() {
-                            override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                                super.onStartSuccess(settingsInEffect)
-                                Log.d(TAG, "BLE Advertiser started successfully")
-                            }
-                            override fun onStartFailure(errorCode: Int) {
-                                super.onStartFailure(errorCode)
-                                Log.w(TAG, "BLE Advertiser failed: $errorCode")
-                            }
-                        }
-                        bleAdvertiser?.startAdvertising(advSettings, advData, advertiseCallback)
+            if (!adapter.isEnabled) return false
+            val serviceId = ParcelUuid(NEXUS_SERVICE_UUID)
+            bleAdvertiser = adapter.bluetoothLeAdvertiser
+            if (bleAdvertiser != null) {
+                val identity = BlePeerIdentity.encode(localId)
+                val settings = AdvertiseSettings.Builder()
+                    .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                    .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                    .setConnectable(false).setTimeout(0).build()
+                // This service is a 16-bit Bluetooth UUID: the legacy payload fits in 31 bytes.
+                val data = AdvertiseData.Builder().addServiceUuid(serviceId)
+                    .addServiceData(serviceId, identity).setIncludeDeviceName(false).build()
+                advertiseCallback = object : AdvertiseCallback() {
+                    override fun onStartFailure(errorCode: Int) {
+                        Log.w(TAG, "BLE advertiser unavailable: $errorCode")
                     }
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "BLE Advertiser startup error (continuing with scanner and discovery): $e")
+                bleAdvertiser?.startAdvertising(settings, data, advertiseCallback)
             }
-
-            // 2. Start BLE Scanner (isolated try-catch)
-            try {
-                val canScan = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                if (canScan) {
-                    bleScanner = adapter.bluetoothLeScanner
-                    if (bleScanner != null) {
-                        val scanSettings = ScanSettings.Builder()
-                            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                            .setReportDelay(0)
-                            .build()
-
-                        scanCallback = object : ScanCallback() {
-                            override fun onScanResult(callbackType: Int, result: ScanResult?) {
-                                super.onScanResult(callbackType, result)
-                                if (result != null) {
-                                    val uuids = result.scanRecord?.serviceUuids
-                                    val name = result.device?.name ?: ""
-                                    val addr = result.device?.address ?: ""
-                                    val isTarget = addr.equals(targetPeerMac, ignoreCase = true) ||
-                                                  name.contains(targetPeerName, ignoreCase = true) ||
-                                                  name.contains("Nexus", ignoreCase = true) ||
-                                                  uuids?.contains(parcelUuid) == true
-
-                                    if (isTarget || result.rssi > -80) {
-                                        Log.d(TAG, "BLE Scan Result: addr=$addr, name='$name', rssi=${result.rssi}")
-                                        sendRssiSampleToFlutter(result.rssi, isTarget, name, addr)
-                                    }
-                                }
-                            }
-
-                            override fun onBatchScanResults(results: MutableList<ScanResult>?) {
-                                super.onBatchScanResults(results)
-                                val best = results?.maxByOrNull { it.rssi }
-                                if (best != null) {
-                                    val name = best.device?.name ?: ""
-                                    val addr = best.device?.address ?: ""
-                                    val isTarget = addr.equals(targetPeerMac, ignoreCase = true) ||
-                                                  name.contains(targetPeerName, ignoreCase = true)
-                                    sendRssiSampleToFlutter(best.rssi, isTarget, name, addr)
-                                }
-                            }
-
-                            override fun onScanFailed(errorCode: Int) {
-                                super.onScanFailed(errorCode)
-                                Log.w(TAG, "BLE Scanner failed: $errorCode")
-                            }
-                        }
-
-                        bleScanner?.startScan(null, scanSettings, scanCallback)
-                        Log.d(TAG, "BLE Scanner started")
-                    }
+            bleScanner = adapter.bluetoothLeScanner
+            if (bleScanner == null) {
+                Log.w(TAG, "BLE scanner unavailable")
+                releaseBleResources()
+                return false
+            }
+            scanCallback = object : ScanCallback() {
+                override fun onScanResult(callbackType: Int, result: ScanResult?) {
+                    if (scanCallback === this) result?.let { handleBleScanResult(it) }
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "BLE Scanner startup error: $e")
-            }
-
-            // 3. Register Classic Discovery for paired PC (Franky)
-            try {
-                if (!isDiscoveryReceiverRegistered) {
-                    val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
-                    registerReceiver(discoveryReceiver, filter)
-                    isDiscoveryReceiverRegistered = true
+                override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+                    if (scanCallback === this) results?.forEach { handleBleScanResult(it) }
                 }
-
-                discoveryLoopRunnable = object : Runnable {
-                    override fun run() {
-                        try {
-                            if (adapter.isDiscovering) {
-                                adapter.cancelDiscovery()
-                            }
-                            adapter.startDiscovery()
-                        } catch (e: Exception) {
-                            Log.e(TAG, "startDiscovery error", e)
-                        }
-                        mainHandler.postDelayed(this, 8000)
-                    }
+                override fun onScanFailed(errorCode: Int) {
+                    if (scanCallback !== this) return
+                    releaseBleResources()
+                    Log.w(TAG, "BLE scanner failed: $errorCode")
                 }
-                mainHandler.post(discoveryLoopRunnable!!)
-            } catch (e: Exception) {
-                Log.w(TAG, "Discovery startup error: $e")
             }
-
-            // 4. Connect GATT to Franky (40:9F:38:A6:80:DE) if available
-            try {
-                val targetDevice = adapter.getRemoteDevice(targetPeerMac)
-                Log.d(TAG, "Initiating GATT connection to target device $targetPeerMac...")
-                bluetoothGatt = targetDevice.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_AUTO)
-            } catch (e: Exception) {
-                Log.e(TAG, "GATT connect exception", e)
-            }
-
+            val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setReportDelay(0).build()
+            bleScanner?.startScan(null, settings, scanCallback)
             isBleProximityActive = true
-            Log.i(TAG, "startBleProximityMonitoring initialized successfully")
+            return true
         } catch (e: Exception) {
-            Log.e(TAG, "startBleProximityMonitoring failed", e)
-            isBleProximityActive = false
+            Log.w(TAG, "BLE proximity startup failed", e)
+            releaseBleResources()
+            return false
         }
     }
 
     private fun stopBleProximityMonitoring() {
-        try {
-            stopGattRssiPolling()
-            discoveryLoopRunnable?.let { mainHandler.removeCallbacks(it) }
-            discoveryLoopRunnable = null
+        bleProximityRequested = false
+        releaseBleResources()
+    }
 
-            if (isDiscoveryReceiverRegistered) {
-                try {
-                    unregisterReceiver(discoveryReceiver)
-                } catch (_: Exception) {}
-                isDiscoveryReceiverRegistered = false
-            }
-
-            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-            val adapter = bluetoothManager?.adapter ?: BluetoothAdapter.getDefaultAdapter()
-            if (adapter?.isDiscovering == true) {
-                adapter.cancelDiscovery()
-            }
-
-            if (advertiseCallback != null && bleAdvertiser != null) {
-                bleAdvertiser?.stopAdvertising(advertiseCallback)
-            }
-            if (scanCallback != null && bleScanner != null) {
-                bleScanner?.stopScan(scanCallback)
-            }
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-            bluetoothGatt = null
-        } catch (_: Exception) {}
+    private fun releaseBleResources() {
+        try { advertiseCallback?.let { bleAdvertiser?.stopAdvertising(it) } }
+        catch (e: Exception) { Log.w(TAG, "BLE advertiser stop failed", e) }
+        try { scanCallback?.let { bleScanner?.stopScan(it) } }
+        catch (e: Exception) { Log.w(TAG, "BLE scanner stop failed", e) }
         isBleProximityActive = false
         advertiseCallback = null
         scanCallback = null
-        Log.i(TAG, "stopBleProximityMonitoring completed")
+        bleAdvertiser = null
+        bleScanner = null
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 1001) {
-            Log.d(TAG, "Runtime permissions result received. Restarting BLE proximity monitoring...")
-            mainHandler.postDelayed({
-                stopBleProximityMonitoring()
-                startBleProximityMonitoring()
-            }, 600)
+        if (requestCode == 1001 && bleProximityRequested && grantResults.isNotEmpty() &&
+            grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED }) {
+            startBleProximityMonitoring()
         }
     }
 

@@ -93,8 +93,11 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      // Verified modal closed and confirmation shown
-      expect(find.textContaining('Testo digitato su PC: Documento Nexus'), findsOneWidget);
+      // No connected backend: preserve the text and never claim it was typed.
+      expect(find.text('Tastiera Remota & Macro PC'), findsOneWidget);
+      expect(tester.widget<TextField>(textField).controller!.text, 'Documento Nexus');
+      expect(find.textContaining('Connessione diretta'), findsOneWidget);
+      expect(find.text('Digitazione confermata dal PC'), findsNothing);
     });
   });
 }

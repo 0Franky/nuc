@@ -522,19 +522,15 @@ impl NexusActor for MediaPluginActor {
                                             }
 
                                             if msg_type == "KEYBOARD_TEXT" {
-                                                let text_val =
-                                                    json_val["text"].as_str().unwrap_or("");
-                                                append_log(
-                                                    "nexus_daemon.log",
-                                                    &format!(
-                                                        "[Keyboard Unicode Text] length: {} chars",
-                                                        text_val.len()
-                                                    ),
-                                                );
-                                                let result = nexus_plugin_input::NativeInputInjector::inject_unicode_text(
-                                                    text_val,
-                                                );
-                                                let _ = tx.send(input_status(actor.device_id, result));
+                                                let text = json_val["text"].as_str().unwrap_or("").to_owned();
+                                                let request_id = json_val["request_id"].as_str().map(str::to_owned);
+                                                let result = if text.chars().count() > 4096 {
+                                                    Err(NexusError::Plugin { plugin: "input.text", message: "Il testo supera il limite di 4096 caratteri; non è stato digitato.".into() })
+                                                } else {
+                                                    tokio::task::spawn_blocking(move || nexus_plugin_input::NativeInputInjector::inject_unicode_text(&text))
+                                                        .await.unwrap_or_else(|_| Err(NexusError::Plugin { plugin: "input.text", message: "Invio testo interrotto; potrebbe essere parziale. Controlla il PC prima di riprovare.".into() }))
+                                                };
+                                                let _ = tx.send(input_status_with_request(actor.device_id, result, request_id.as_deref()));
                                                 continue;
                                             }
 
@@ -698,11 +694,9 @@ impl NexusActor for MediaPluginActor {
                                             if msg_type == "PROXIMITY_TRIGGER" {
                                                 let action =
                                                     json_val["action"].as_str().unwrap_or("");
-                                                if action == "LOCK_WORKSTATION" {
-                                                    nexus_plugin_proximity::lock_workstation();
-                                                } else if action == "PAUSE_ON_WALK_AWAY"
-                                                    || action == "PAUSE"
-                                                {
+                                                // Network proximity commands are limited to media.
+                                                // The local calibrated policy exclusively owns locking.
+                                                if let Some(media_key) = remote_proximity_media_key(action) {
                                                     let mut current =
                                                         actor.current_session.write().await;
                                                     if let Some(session) = current.as_mut() {
@@ -710,10 +704,10 @@ impl NexusActor for MediaPluginActor {
                                                     }
                                                     drop(current);
                                                     let result = nexus_plugin_input::NativeInputInjector::inject_media_key(
-                                                        "PAUSE",
+                                                        media_key,
                                                     );
                                                 let _ = tx.send(input_status(actor.device_id, result));
-                                                    actor.send_remote_command("PAUSE".into(), None).await;
+                                                    actor.send_remote_command(media_key.into(), None).await;
                                                 }
                                                 continue;
                                             }
@@ -1095,8 +1089,53 @@ impl NexusActor for MediaPluginActor {
 }
 
 fn input_status(device_id: DeviceId, result: NexusResult<()>) -> String {
-    match result {
+    input_status_with_request(device_id, result, None)
+}
+
+fn input_status_with_request(device_id: DeviceId, result: NexusResult<()>, request_id: Option<&str>) -> String {
+    let mut status = match result {
         Ok(()) => serde_json::json!({"type":"INPUT_STATUS", "ok":true, "device_id":device_id.to_string()}),
         Err(error) => serde_json::json!({"type":"INPUT_STATUS", "ok":false, "device_id":device_id.to_string(), "message":error.to_string()}),
-    }.to_string()
+    };
+    if let Some(id) = request_id { status["request_id"] = id.into(); }
+    status.to_string()
+}
+
+/// An allowlist prevents old peers from turning proximity telemetry into OS locks.
+fn remote_proximity_media_key(action: &str) -> Option<&'static str> {
+    match action {
+        "PAUSE" | "PAUSE_ON_WALK_AWAY" => Some("PAUSE"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod proximity_command_tests {
+    use super::remote_proximity_media_key;
+    #[test]
+    fn remote_proximity_cannot_request_session_locking() {
+        assert_eq!(remote_proximity_media_key("LOCK_WORKSTATION"), None);
+        assert_eq!(remote_proximity_media_key("LOCK"), None);
+        assert_eq!(remote_proximity_media_key(""), None);
+        assert_eq!(remote_proximity_media_key("PAUSE_ON_WALK_AWAY"), Some("PAUSE"));
+        assert_eq!(remote_proximity_media_key("PAUSE"), Some("PAUSE"));
+    }
+}
+
+#[cfg(test)]
+mod text_ack_tests {
+    use super::*;
+    #[test]
+    fn text_ack_preserves_correlation_on_success_and_failure() {
+        let peer = DeviceId::new_random();
+        let success: serde_json::Value = serde_json::from_str(&input_status_with_request(peer, Ok(()), Some("text-1"))).unwrap();
+        assert_eq!(success["request_id"], "text-1");
+        assert_eq!(success["ok"], true);
+        let failure = NexusError::Plugin { plugin: "input", message: "pending permission".into() };
+        let failure: serde_json::Value = serde_json::from_str(&input_status_with_request(peer, Err(failure), Some("text-2"))).unwrap();
+        assert_eq!(failure["request_id"], "text-2");
+        assert_eq!(failure["ok"], false);
+        let legacy: serde_json::Value = serde_json::from_str(&input_status(peer, Ok(()))).unwrap();
+        assert!(legacy.get("request_id").is_none());
+    }
 }

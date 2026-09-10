@@ -6,7 +6,7 @@ DIST_DIR="$ROOT_DIR/dist/linux"
 for tool in cargo flutter python3 git cmake ninja clang pkg-config; do
   command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
 done
-for package in gtk+-3.0 x11 xtst xkbcommon wayland-client; do
+for package in gtk+-3.0 x11 xtst xkbcommon wayland-client dbus-1; do
   pkg-config --exists "$package" || { echo "Missing native development package: $package. See wiki/04-os-integration-and-constraints/03-linux-integration.md" >&2; exit 1; }
 done
 if ! pkg-config --exists ayatana-appindicator3-0.1 && ! pkg-config --exists appindicator3-0.1; then

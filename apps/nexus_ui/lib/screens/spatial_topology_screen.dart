@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../services/lan_sync_service.dart';
 import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
+import '../widgets/proximity_lock_switch.dart';
 import '../widgets/nexus_pill.dart';
 import '../widgets/topology_canvas.dart';
 import '../widgets/target_device_selector.dart';
@@ -18,10 +19,8 @@ class SpatialTopologyScreen extends StatefulWidget {
 
 class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   String _selectedPosition = LanSyncService.instance.spatialPosition;
-  bool _autoLock = LanSyncService.instance.autoLockOnWalkAway;
   bool _autoPauseMedia = LanSyncService.instance.autoPauseMediaOnWalkAway;
   bool _wakeOnApproach = LanSyncService.instance.wakeOnApproach;
-  bool _bleAutoDetect = LanSyncService.instance.bleSpatialAutoDetect;
   bool _isDragging = false;
 
   Timer? _timer;
@@ -40,9 +39,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
     _timer = Timer.periodic(const Duration(milliseconds: 600), (_) {
       if (mounted && !_isDragging) {
         setState(() {
-          if (_bleAutoDetect) {
-            _selectedPosition = LanSyncService.instance.spatialPosition;
-          }
+          _selectedPosition = LanSyncService.instance.spatialPosition;
         });
       }
     });
@@ -298,202 +295,31 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                   ),
                 ],
 
-                // Auto-determine BLE Switch Container
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: NexusTheme.surfaceSecondary,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: (isBleAvailable && _bleAutoDetect) ? NexusTheme.successGreen.withAlpha(120) : NexusTheme.borderCard,
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(
-                            isBleAvailable ? Icons.bluetooth_searching_rounded : Icons.bluetooth_disabled_rounded,
-                            size: 20,
-                            color: (isBleAvailable && _bleAutoDetect) ? NexusTheme.successGreen : NexusTheme.textTertiary,
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text('Auto-Determina via Bluetooth LE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                Text(
-                                  !isBleAvailable
-                                      ? 'Disabilitato: Nessun adattatore Bluetooth attivo sul dispositivo'
-                                      : _bleAutoDetect
-                                          ? 'Posizione calcolata automaticamente dal raggio radio BLE (<1.8m desk)'
-                                          : 'Controllo manuale attivo (tocca o trascina sullo slot desiderato)',
-                                  style: TextStyle(
-                                    color: !isBleAvailable ? NexusTheme.warningAmber : NexusTheme.textSecondary,
-                                    fontSize: 10.5,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Switch(
-                            value: isBleAvailable && _bleAutoDetect,
-                            onChanged: isBleAvailable
-                                ? (v) {
-                                    setState(() {
-                                      _bleAutoDetect = v;
-                                      LanSyncService.instance.setBleSpatialAutoDetect(v);
-                                      if (v && LanSyncService.instance.estimatedDistanceMeters != null) {
-                                        _selectedPosition = LanSyncService.instance.spatialPosition;
-                                      }
-                                    });
-                                  }
-                                : null,
-                          ),
-                        ],
-                      ),
-                      if (isBleAvailable && _bleAutoDetect) ...[
-                        const SizedBox(height: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                          decoration: BoxDecoration(
-                            color: LanSyncService.instance.isTopologyScanActive
-                                ? NexusTheme.accentIndigo.withAlpha(20)
-                                : NexusTheme.successGreen.withAlpha(20),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: LanSyncService.instance.isTopologyScanActive
-                                  ? NexusTheme.accentIndigo.withAlpha(60)
-                                  : NexusTheme.successGreen.withAlpha(60),
-                              width: 0.8,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                LanSyncService.instance.isTopologyScanActive
-                                    ? Icons.sync_rounded
-                                    : Icons.check_circle_outline_rounded,
-                                size: 14,
-                                color: LanSyncService.instance.isTopologyScanActive
-                                    ? NexusTheme.accentIndigo
-                                    : NexusTheme.successGreen,
-                              ),
-                              const SizedBox(width: 7),
-                              Expanded(
-                                child: Text(
-                                  LanSyncService.instance.isTopologyScanActive
-                                      ? 'Scansione Topologia attiva (${LanSyncService.instance.consecutiveUnchangedScans}/3) • In ascolto'
-                                      : 'Topologia stabilizzata (3/3 scansioni identiche) • Prossimità BLE attiva',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: LanSyncService.instance.isTopologyScanActive
-                                        ? NexusTheme.accentIndigo
-                                        : NexusTheme.successGreen,
-                                  ),
-                                ),
-                              ),
-                              if (!LanSyncService.instance.isTopologyScanActive)
-                                InkWell(
-                                  onTap: () {
-                                    setState(() {
-                                      LanSyncService.instance.restartSpatialTopologyScan(isManual: true);
-                                      _bleAutoDetect = true;
-                                      _selectedPosition = LanSyncService.instance.spatialPosition;
-                                    });
-                                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text('🔍 Nuova scansione topologia avviata... Posizione: $_selectedPosition'),
-                                        backgroundColor: NexusTheme.accentIndigo,
-                                        duration: const Duration(seconds: 2),
-                                      ),
-                                    );
-                                  },
-                                  child: const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    child: Text(
-                                      'RISCANSIONA',
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                        color: NexusTheme.accentIndigo,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ],
-
-                      // Flapping suppression warning message (>2 changes in 5 min)
-                      if (LanSyncService.instance.isAutoScanSuppressedDueToFlapping) ...[
-                        const SizedBox(height: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: NexusTheme.warningAmber.withAlpha(25),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: NexusTheme.warningAmber.withAlpha(90)),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.warning_amber_rounded, color: NexusTheme.warningAmber, size: 18),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  LanSyncService.instance.scanFlappingWarningMessage ??
-                                      'Scansione automatica disattivata per saturazione: rilevate più di 2 variazioni in 5 minuti.',
-                                  style: const TextStyle(color: NexusTheme.warningAmber, fontSize: 11, fontWeight: FontWeight.w600),
-                                ),
-                              ),
-                              TextButton(
-                                onPressed: () {
-                                  setState(() {
-                                    LanSyncService.instance.restartSpatialTopologyScan(isManual: true);
-                                    _bleAutoDetect = true;
-                                  });
-                                },
-                                style: TextButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  minimumSize: Size.zero,
-                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                ),
-                                child: const Text('RISCANSIONA', style: TextStyle(color: NexusTheme.warningAmber, fontWeight: FontWeight.bold, fontSize: 11)),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                ],
-              ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Monitoraggio prossimità Bluetooth'),
+                  subtitle: const Text('Il segnale BLE non determina sinistra e destra. Disponi i dispositivi sul canvas e sincronizza la topologia.'),
+                  value: isBleAvailable && lan.bleSpatialAutoDetect,
+                  onChanged: isBleAvailable ? (value) {
+                    setState(() => lan.setBleSpatialAutoDetect(value));
+                  } : null,
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
           const SizedBox(height: 16),
 
           // 2. Proximity & Motion Radar
           NexusCard(
-            title: 'Radar Prossimità BLE & Vettore Moto',
-            subtitle: !isBleAvailable
-                ? 'Radio Bluetooth disattivata a livello di sistema operativo'
-                : distance != null
-                    ? 'Stima continua di distanza e presenza sulla postazione'
-                    : LanSyncService.instance.isConnected
-                        ? 'Peer LAN collegato • In attesa di pacchetti BLE beacon...'
-                        : 'In ascolto beacon BLE del dispositivo associato...',
+            title: 'Prossimità BLE stimata',
+            subtitle: lan.proximityStatus,
             icon: motionIcon,
             iconColor: motionColor,
             trailing: NexusPill(
               label: !isBleAvailable
                   ? 'RADIO OFF'
                   : distance != null
-                      ? '${distance.toStringAsFixed(1)} m'
+                      ? '≈ ${distance.toStringAsFixed(1)} m'
                       : LanSyncService.instance.isConnected
                           ? 'SCANNING'
                           : 'NO SIGNAL',
@@ -524,13 +350,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                       Text(motionText, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: motionColor)),
                       const SizedBox(height: 4),
                       Text(
-                        !isBleAvailable
-                            ? 'Attiva il Bluetooth in Windows/Android per avviare il filtro Kalman'
-                            : distance != null
-                                ? 'Filtro di Kalman 1D attivo • ${LanSyncService.instance.liveRssi != null ? "RSSI ${LanSyncService.instance.liveRssi} dBm • " : ""}Precisione ±0.15m'
-                                : LanSyncService.instance.isConnected
-                                    ? 'Connessione LAN P2P attiva • In attesa del primo campionamento RF'
-                                    : 'Associa un peer ed entra nel raggio Bluetooth per la misurazione',
+                        lan.proximityStatus,
                         style: const TextStyle(fontSize: 11.5, color: NexusTheme.textSecondary),
                       ),
                     ],
@@ -552,18 +372,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
               children: [
                 const SharedInputPanel(),
                 const Divider(),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Smart Walk-Away Lock (Auto-Lock)', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-                  subtitle: const Text('Blocca istantaneamente il PC quando ti allontani dalla scrivania',
-                      style: TextStyle(fontSize: 11.5, color: NexusTheme.textSecondary)),
-                  value: _autoLock,
-                  onChanged: (v) {
-                    setState(() => _autoLock = v);
-                    LanSyncService.instance.autoLockOnWalkAway = v;
-                    LanSyncService.instance.saveSettingBool('autoLockOnWalkAway', v);
-                  },
-                ),
+                const ProximityLockSwitch(),
                 const Divider(),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,

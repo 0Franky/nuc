@@ -77,3 +77,9 @@ RestartSec=3
 WantedBy=default.target
 ```
 Abilitabile con `systemctl --user enable --now nexus-daemon`.
+
+## Aggiornamento BLE e input Wayland
+
+Lo scanner BlueZ richiede `libdbus-1-dev` per compilare. Per il touchpad Wayland serve
+un portale desktop che implementi RemoteDesktop (GNOME/KDE); non serve ydotoold.
+Vedi [revisione e test](../2026-09-10-proximity-input-review.md).

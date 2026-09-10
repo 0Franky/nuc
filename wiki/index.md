@@ -93,3 +93,5 @@ Questa documentazione è divisa in 5 sezioni principali:
 ## Stato operativo corrente
 
 - [Topologia, dipendenze e pacchetto Linux: cause, verifiche e attività aperte](2026-09-10-topology-linux-validation.md)
+
+- [Revisione prossimità BLE e input Wayland](2026-09-10-proximity-input-review.md) — cause, consenso, test e limiti correnti.

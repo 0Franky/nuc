@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../services/lan_sync_service.dart';
 import '../services/shared_input_service.dart';
 
@@ -27,7 +28,16 @@ class SharedInputPanel extends StatelessWidget {
           ),
           if (input.enabled || input.trusted.isNotEmpty) ...[
             const Text(
-              'Disponi i PC sul canvas e attiva la condivisione su entrambi. Autorizza ogni PC per abilitare il passaggio al suo bordo.',
+              '1. Disponi Linux a sinistra e Windows a destra, poi sincronizza la topologia.\n'
+              '2. Attiva questo switch su entrambi i PC.\n'
+              '3. Autorizza reciprocamente i PC confrontando le impronte.\n'
+              '4. Su Linux accetta il consenso del desktop: per Windows → Linux servono cattura pronta su Windows e ricezione pronta su Linux.\n'
+              '5. Porta il puntatore al bordo sinistro di Windows. Per liberarlo, premi insieme Ctrl + Alt + Shift + Win di sinistra.\n\n'
+              'Il touchpad del telefono è separato: seleziona il PC nella schermata Touchpad; su Wayland la prima azione richiede un proprio consenso RemoteDesktop. Non richiede questo switch.',
+            ),
+            ExpansionTile(
+              title: const Text('Diagnostica mouse e tastiera'),
+              children: [SelectableText(input.diagnosticReport)],
             ),
             if (input.fingerprint != null)
               ExpansionTile(
@@ -58,8 +68,16 @@ class SharedInputPanel extends StatelessWidget {
                           ? 'Attiva input condiviso anche su questo PC'
                           : !positioned
                           ? 'Disponi questo PC sul canvas'
+                          : approved &&
+                                metadata is Map &&
+                                metadata['emulation_ready'] == false
+                          ? 'Autorizzato, ma questo PC non può ancora ricevere input: completa il consenso del desktop'
+                          : approved &&
+                                metadata is Map &&
+                                metadata['emulation_ready'] == true
+                          ? 'Autorizzato • Ricezione pronta • Cattura ${metadata['capture_ready'] == true ? 'pronta' : 'non pronta'}'
                           : approved
-                          ? 'Autorizzato per input condiviso'
+                          ? 'Autorizzato • Stato del backend remoto non disponibile: aggiorna questo PC'
                           : 'Autorizzazione necessaria',
                     ),
                     trailing: TextButton(

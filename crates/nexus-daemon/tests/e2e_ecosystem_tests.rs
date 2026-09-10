@@ -191,7 +191,7 @@ async fn test_e2e_proximity_kalman_filtering_and_walkaway_detection() {
     let pc_id = DeviceId::new_random();
     let phone_id = DeviceId::new_random();
     let proximity_actor = ProximityPluginActor::new(pc_id);
-    *proximity_actor.auto_lock_enabled.write().await = false; // Never lock screen during automated tests
+    assert!(!proximity_actor.auto_lock_enabled()); // Consent is off by default.
 
     // 1. Phone is near desk (-52 dBm, approx 1.1m)
     for _ in 0..5 {

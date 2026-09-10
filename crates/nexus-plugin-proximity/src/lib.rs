@@ -10,6 +10,40 @@ mod tests {
     use nexus_types::ProximityMotion;
 
     #[test]
+    fn local_lock_consent_defaults_off_and_is_shared_by_actor_handles() {
+        let actor = ProximityPluginActor::new(nexus_types::DeviceId::new_random());
+        let handle = actor.clone();
+        assert!(!actor.auto_lock_enabled());
+        handle.set_auto_lock_enabled(true);
+        assert!(actor.auto_lock_enabled());
+        actor.set_auto_lock_enabled(false);
+        assert!(!handle.auto_lock_enabled());
+    }
+
+    #[test]
+    fn disabling_consent_prevents_invoking_the_os_action() {
+        let actor = ProximityPluginActor::new(nexus_types::DeviceId::new_random());
+        assert_eq!(actor.lock_if_enabled(|| panic!("OS action must not run")), None);
+        actor.set_auto_lock_enabled(true);
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(actor.lock_if_enabled(|| { calls.set(calls.get() + 1); true }), Some(true));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(actor.lock_if_enabled(|| false), Some(false));
+        actor.set_auto_lock_enabled(false);
+        assert_eq!(actor.lock_if_enabled(|| panic!("Revoked consent must prevent OS action")), None);
+    }
+
+    #[tokio::test]
+    async fn far_zone_is_telemetry_and_does_not_enable_locking() {
+        let actor = ProximityPluginActor::new(nexus_types::DeviceId::new_random());
+        let (bus, _) = nexus_actor_system::EventBus::new(16, 16);
+        let peer = nexus_types::DeviceId::new_random();
+        let (_, zone, _) = actor.process_ble_sample(&bus, peer, -90.0, -59.0).await;
+        assert_eq!(zone, PresenceZone::Far);
+        assert!(!actor.auto_lock_enabled());
+    }
+
+    #[test]
     fn test_kalman_rssi_filter_convergence() {
         let mut filter = KalmanRssiFilter::new(0.05, 1.5);
 
