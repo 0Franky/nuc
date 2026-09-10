@@ -4,14 +4,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'lan_sync_service.dart';
+import 'logger_service.dart';
 
 /// The input engine runs as a separate, version-pinned native process. Nexus
 /// owns configuration/topology; keystrokes never pass through the Flutter UI.
 class SharedInputService extends ChangeNotifier {
   static final instance = SharedInputService();
-  SharedInputService({Directory? engineDirectory, Directory? configDirectory})
-    : _engineDirectory = engineDirectory,
-      _configDirectory = configDirectory;
+  SharedInputService({this._engineDirectory, this._configDirectory});
   final Directory? _engineDirectory;
   final Directory? _configDirectory;
   static const port = 4243;
@@ -43,6 +42,8 @@ class SharedInputService extends ChangeNotifier {
           ? 'Input condiviso disattivato'
           : !running
           ? 'Backend non avviato'
+          : Platform.isLinux && Platform.environment['XDG_SESSION_TYPE'] == 'x11' && !captureReady && emulationReady
+          ? 'Emulazione pronta; cattura mouse e tastiera non disponibile in X11'
           : !captureReady || !emulationReady
           ? 'In attesa dei permessi del desktop'
           : 'Mouse e tastiera pronti • Ctrl + Alt + Shift + Win/Super per tornare in locale');
@@ -301,7 +302,7 @@ class SharedInputService extends ChangeNotifier {
           '${engineDirectory.path}/lan-mouse${Platform.isWindows ? '.exe' : ''}';
       if (!await File(executable).exists()) {
         throw StateError(
-          'Backend input assente nel pacchetto. Ricompila con scripts/build_input_backend.py.',
+          'Pacchetto incompleto: mancano i programmi Rust per mouse e tastiera. Su Linux avvia scripts/nexus-run oppure esegui bash scripts/build_linux.sh.',
         );
       }
       _lastConfig = '';
@@ -335,8 +336,7 @@ class SharedInputService extends ChangeNotifier {
           .transform(const LineSplitter())
           .listen((line) {
             if (line.contains('ERROR') || line.contains('WARN')) {
-              error = 'Backend input: $line';
-              notifyListeners();
+              NexusLogger.log('INPUT_BACKEND', line);
             }
           });
       unawaited(

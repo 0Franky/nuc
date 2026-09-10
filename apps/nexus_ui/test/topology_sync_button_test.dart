@@ -15,6 +15,16 @@ void main() {
     final node = tester.getRect(find.byKey(const ValueKey('topology-peer-linux')));
     expect(canvas.contains(node.topLeft), true);
     expect(canvas.contains(node.bottomRight), true);
+    final local = find.byKey(ValueKey('topology-peer-${lan.deviceId}'));
+    expect(local, findsOneWidget, reason: 'The local device must also be draggable');
+    final before = tester.getCenter(local);
+    final gesture = await tester.startGesture(before);
+    await gesture.moveBy(const Offset(5, 0));
+    await tester.pump();
+    expect(tester.getCenter(local).dx - before.dx, closeTo(5, 0.1));
+    await gesture.up();
+    await tester.pump();
+    expect(tester.getCenter(local).dx - before.dx, closeTo(5, 0.1));
     final button = find.widgetWithText(FilledButton, 'Sincronizza topologia con gli altri dispositivi');
     await tester.ensureVisible(button);
     await tester.tap(button);

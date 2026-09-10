@@ -9,17 +9,19 @@ import 'package:nexus_ui/screens/settings_screen.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('1. Hardware Radio Check via FFI matches real OS radio state', () {
+  test('1. Hardware Radio Check via FFI matches real OS radio state', () async {
     final isBtEnabled = NexusFfiBridge.instance.isBluetoothEnabled();
     expect(isBtEnabled, isA<bool>());
     // ignore: avoid_print
     print('Verified real OS Bluetooth radio enabled: $isBtEnabled');
 
-    LanSyncService.instance.checkBluetoothHardwareStatus();
+    LanSyncService.instance.bleSpatialAutoDetect = true;
+    LanSyncService.instance.isBleHardwareAvailable = !isBtEnabled;
+    await LanSyncService.instance.checkBluetoothHardwareStatus();
     expect(LanSyncService.instance.isBleHardwareAvailable, equals(isBtEnabled));
 
     if (!isBtEnabled) {
-      expect(LanSyncService.instance.bleSpatialAutoDetect, isFalse);
+      expect(LanSyncService.instance.bleSpatialAutoDetect, isTrue); // Hardware loss preserves user preference.
       expect(LanSyncService.instance.estimatedDistanceMeters, isNull);
       expect(LanSyncService.instance.proximityMotion, isNull);
     }

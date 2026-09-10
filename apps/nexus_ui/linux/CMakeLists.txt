@@ -137,3 +137,13 @@ if(EXISTS "${NEXUS_NATIVE_LIBRARY}")
 else()
   message(FATAL_ERROR "Build the Rust engine first: cargo build -p nexus-ffi --release")
 endif()
+
+# Keep the input backend beside both development and release executables.
+set(NEXUS_INPUT_ENGINE "${CMAKE_CURRENT_SOURCE_DIR}/../../../target/input-engine")
+foreach(INPUT_BINARY lan-mouse nexus-input-host)
+  if(NOT EXISTS "${NEXUS_INPUT_ENGINE}/${INPUT_BINARY}")
+    message(FATAL_ERROR "Missing ${INPUT_BINARY}. Run bash scripts/build_linux.sh from the repository first.")
+  endif()
+endforeach()
+install(DIRECTORY "${NEXUS_INPUT_ENGINE}/" DESTINATION "${CMAKE_INSTALL_PREFIX}/input-engine"
+  USE_SOURCE_PERMISSIONS COMPONENT Runtime)

@@ -1,5 +1,32 @@
 # 03. Integrazione Nativa Linux
 
+> Le sezioni architetturali sotto descrivono anche obiettivi progettuali, non una
+> verifica di tutte le funzionalità implementate. Per lo stato effettivo e i test:
+> [registro operativo](../2026-09-10-topology-linux-validation.md).
+
+## Avvio desktop dal repository
+
+Usare `bash scripts/nexus-run`. Il launcher non dipende da percorsi personali:
+aggiorna con fast-forward, compila il pacchetto completo e avvia `dist/linux/nexus_ui`.
+Per usare i sorgenti locali: `bash scripts/nexus-run --no-update`.
+Per avviare senza ricompilare: `bash scripts/nexus-run --no-update --no-build`.
+L’app incorpora già il core Rust tramite FFI: non avviare contemporaneamente il servizio
+headless riportato come esempio più sotto. Il launcher segnala se quel servizio è attivo.
+
+Prerequisiti Ubuntu/Debian per la build (oltre a Flutter >= 3.47.2, Rust/Cargo e Python 3):
+
+```sh
+sudo apt install git clang cmake ninja-build pkg-config libgtk-3-dev \
+  libayatana-appindicator3-dev libx11-dev libxtst-dev libxkbcommon-dev \
+  libwayland-dev libssl-dev
+```
+
+`input-engine/lan-mouse` e `input-engine/nexus-input-host` devono essere accanto
+all’eseguibile Flutter. Lo script di build e CMake controllano e includono entrambi;
+copiare il solo eseguibile o la sola libreria FFI produce un pacchetto incompleto.
+Python serve in fase di build, non come demone runtime. Conservare sorgenti e licenza
+inclusi nella cartella input-engine.
+
 Su distribuzioni Linux moderne (Ubuntu, Fedora, Arch, Debian), il supporto alle tecnologie di nuova generazione come **PipeWire** e **Wayland** è prioritario.
 
 ---

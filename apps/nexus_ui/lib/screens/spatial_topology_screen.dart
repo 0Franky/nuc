@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -6,7 +5,7 @@ import '../services/lan_sync_service.dart';
 import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
 import '../widgets/nexus_pill.dart';
-import '../widgets/spatial_grid_painter.dart';
+import '../widgets/topology_canvas.dart';
 import '../widgets/target_device_selector.dart';
 import '../widgets/shared_input_panel.dart';
 
@@ -24,7 +23,6 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   bool _wakeOnApproach = LanSyncService.instance.wakeOnApproach;
   bool _bleAutoDetect = LanSyncService.instance.bleSpatialAutoDetect;
   bool _isDragging = false;
-  double _canvasScale = 1;
 
   Timer? _timer;
   StreamSubscription? _topologySub;
@@ -629,284 +627,16 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
 
   Widget _buildSpatialCanvas() {
     final lan = LanSyncService.instance;
-    final liveDistance = lan.estimatedDistanceMeters;
-    final localName = lan.deviceName;
-    final isLocalMobile = Platform.isAndroid || Platform.isIOS;
-
-    // Filter real LAN peers (excluding this device)
-    final peers = lan.discoveredPeers
-        .where((p) => p['id'] != lan.deviceId && p['id'] != 'self')
-        .toList();
-
-    return Container(
-      width: double.infinity,
-      height: 280,
-      key: const ValueKey('topology-canvas'),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: NexusTheme.borderCard),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final centerX = constraints.maxWidth / 2;
-          final centerY = constraints.maxHeight / 2;
-          if (!_isDragging) {
-            _canvasScale = 1;
-            for (final peer in peers) {
-              final offset = lan.getDeviceOffset(peer['id'] as String);
-              if (offset.dx.abs() > 0) _canvasScale = math.min(_canvasScale, math.max(1, centerX - 58) / offset.dx.abs());
-              if (offset.dy.abs() > 0) _canvasScale = math.min(_canvasScale, math.max(1, centerY - 50) / offset.dy.abs());
-            }
-          }
-
-          return GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onTapUp: (details) {
-              if (peers.isEmpty) return;
-              final relX = details.localPosition.dx - centerX;
-              final relY = details.localPosition.dy - centerY;
-              if (relX.abs() < 40 && relY.abs() < 40) return; // tapped center
-              if (relX.abs() > relY.abs()) {
-                _updatePosition(relX >= 0 ? "Right" : "Left");
-              } else {
-                _updatePosition(relY >= 0 ? "Below" : "Above");
-              }
-            },
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                // Grid background lines for spatial orientation
-                CustomPaint(
-                  size: Size(constraints.maxWidth, constraints.maxHeight),
-                  painter: const SpatialGridPainter(),
-                ),
-
-                // Center Node: Local Host (This Device)
-                Positioned(
-                  left: centerX - 58,
-                  top: centerY - 47,
-                  child: Container(
-                    width: 116,
-                    height: 94,
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF6366F1).withAlpha(45),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFF6366F1), width: 1.5),
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFF6366F1).withAlpha(60),
-                          blurRadius: 10,
-                          spreadRadius: 1,
-                        )
-                      ],
-                    ),
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            isLocalMobile ? Icons.phone_android_rounded : Icons.desktop_windows_rounded,
-                            size: 20,
-                            color: const Color(0xFF818CF8),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            localName,
-                            style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.white),
-                            textAlign: TextAlign.center,
-                          ),
-                          Text(
-                            liveDistance != null ? '${liveDistance.toStringAsFixed(1)}m • Host' : 'Host (Questo)',
-                            style: const TextStyle(fontSize: 8.5, color: Colors.grey),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Peer Connection Lines
-                for (final peer in peers) ...[
-                  CustomPaint(
-                    size: Size(constraints.maxWidth, constraints.maxHeight),
-                    painter: SpatialLinePainter(
-                      start: Offset(centerX, centerY),
-                      end: Offset(
-                        centerX + lan.getDeviceOffset(peer['id'] as String? ?? '').dx * _canvasScale,
-                        centerY + lan.getDeviceOffset(peer['id'] as String? ?? '').dy * _canvasScale,
-                      ),
-                      color: NexusDeviceColors.colorForDeviceName(peer['name'] as String? ?? 'Peer').withAlpha(120),
-                    ),
-                  ),
-                ],
-
-                // Real Discovered Peer Nodes (Draggable with 1.4x responsiveness)
-                for (int i = 0; i < peers.length; i++)
-                  _buildPeerNode(peers[i], i, centerX, centerY),
-
-                // If no peers are discovered, show clean radar listening state
-                if (peers.isEmpty)
-                  Positioned(
-                    bottom: 12,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1E293B).withAlpha(220),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: NexusTheme.borderCard),
-                      ),
-                      child: const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.wifi_tethering_rounded,
-                            size: 16,
-                            color: Color(0xFF818CF8),
-                          ),
-                          SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              'In ascolto LAN... Accendi Nexus su un altro dispositivo per disporre gli schermi',
-                              style: TextStyle(fontSize: 10.5, color: Colors.white70, fontStyle: FontStyle.italic),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                // Spatial Canvas Helper Overlay
-                Positioned(
-                  top: 8,
-                  left: 10,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withAlpha(120),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      'Canvas 2D: Trascina i nodi per impostare la posizione fisica dei dispositivi',
-                      style: TextStyle(fontSize: 9, color: Colors.grey.shade300),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildPeerNode(Map<String, dynamic> peer, int index, double centerX, double centerY) {
-    final lan = LanSyncService.instance;
-    final peerId = peer['id'] as String? ?? 'peer-$index';
-    final name = peer['name'] as String? ?? 'Dispositivo ${index + 1}';
-    final liveDistance = lan.estimatedDistanceMeters;
-    final peerOffset = lan.getDeviceOffset(peerId);
-    final devColor = NexusDeviceColors.colorForDeviceName(name);
-
-    final os = (peer['os'] as String?)?.toLowerCase() ?? '';
-    final isDesktop = (peer['device_type'] as String?) == 'Desktop' ||
-        os.contains('windows') ||
-        os.contains('mac') ||
-        os.contains('linux') ||
-        name.toLowerCase().contains('pc');
-
-    final isSelected = lan.selectedTargetDeviceId == peerId || lan.discoveredPeers.length == 1;
-
-    return Positioned(
-      left: (centerX + peerOffset.dx * _canvasScale) - 52,
-      top: (centerY + peerOffset.dy * _canvasScale) - 46,
-      child: GestureDetector(
-        key: ValueKey('topology-peer-$peerId'),
-        behavior: HitTestBehavior.opaque,
-        onPanStart: (details) {
-          _isDragging = true;
-        },
-        onPanUpdate: (details) {
-          // Responsive 1.4x drag multiplier: moving finger effortlessly traverses canvas in 1 motion
-          const dragMultiplier = 1.4;
-          final newX = (peerOffset.dx * _canvasScale + details.delta.dx * dragMultiplier).clamp(-centerX + 58, centerX - 58) / _canvasScale;
-          final newY = (peerOffset.dy * _canvasScale + details.delta.dy * dragMultiplier).clamp(-centerY + 50, centerY - 50) / _canvasScale;
-          final updated = Offset(newX, newY);
-          lan.updateDeviceOffset(peerId, updated, syncNetwork: false);
-          setState(() {
-            _selectedPosition = lan.spatialPosition;
-          });
-        },
-        onPanEnd: (details) {
-          _isDragging = false;
-          final finalOffset = lan.getDeviceOffset(peerId);
-          lan.updateDeviceOffset(peerId, finalOffset, syncNetwork: true);
-          setState(() {
-            _selectedPosition = lan.spatialPosition;
-          });
-        },
-        onPanCancel: () {
-          _isDragging = false;
-        },
-        child: Container(
-          width: 104,
-          height: 92,
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-          decoration: BoxDecoration(
-            color: devColor.withAlpha(50),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isSelected ? devColor : devColor.withAlpha(160),
-              width: isSelected ? 2.2 : 1.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: devColor.withAlpha(isSelected ? 90 : 50),
-                blurRadius: 12,
-                spreadRadius: 1,
-              )
-            ],
-          ),
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  isDesktop ? Icons.desktop_windows_rounded : Icons.phone_android_rounded,
-                  size: 20,
-                  color: devColor,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.white),
-                  textAlign: TextAlign.center,
-                ),
-                Text(
-                  liveDistance != null ? '${liveDistance.toStringAsFixed(1)}m • $_selectedPosition' : _selectedPosition,
-                  style: TextStyle(fontSize: 8.5, color: devColor),
-                  textAlign: TextAlign.center,
-                ),
-                const Text(
-                  '✥ Trascina libero',
-                  style: TextStyle(fontSize: 7.5, color: Colors.white60),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+    return TopologyCanvas(
+      points: lan.topologyPoints,
+      localId: lan.deviceId,
+      names: {lan.deviceId: lan.deviceName,
+        for (final peer in lan.discoveredPeers) peer['id'] as String: peer['name'] as String? ?? 'Dispositivo'},
+      onDragging: (active) => _isDragging = active,
+      onMove: (id, point) {
+        lan.moveTopologyDevice(id, point);
+        setState(() => _selectedPosition = lan.spatialPosition);
+      },
     );
   }
 }

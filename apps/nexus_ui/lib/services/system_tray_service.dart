@@ -11,6 +11,7 @@ class SystemTrayService with TrayListener, WindowListener {
   static final SystemTrayService instance = SystemTrayService._();
 
   bool _isAudioActive = false;
+  bool _trayReady = false;
 
   SystemTrayService._();
 
@@ -40,26 +41,20 @@ class SystemTrayService with TrayListener, WindowListener {
       trayManager.addListener(this);
 
       try {
-        String iconPath = 'app_icon.ico';
-        if (File('app_icon.ico').existsSync()) {
-          iconPath = 'app_icon.ico';
-        } else if (File('windows/runner/resources/app_icon.ico').existsSync()) {
-          iconPath = 'windows/runner/resources/app_icon.ico';
-        }
-        await trayManager.setIcon(iconPath);
+        await trayManager.setIcon(Platform.isWindows ? 'assets/tray_icon.ico' : 'assets/tray_icon.png');
+        _trayReady = await updateContextMenu();
       } catch (e) {
         debugPrint('[SystemTray] setIcon non-fatal: $e');
       }
 
-      await updateContextMenu();
     } catch (e) {
       debugPrint('[SystemTray] Desktop tray initialization non-fatal: $e');
     }
   }
 
-  Future<void> updateContextMenu() async {
+  Future<bool> updateContextMenu() async {
     if (kIsWeb || !(Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
-      return;
+      return false;
     }
 
     try {
@@ -89,8 +84,12 @@ class SystemTrayService with TrayListener, WindowListener {
       );
 
       await trayManager.setContextMenu(menu);
-      await trayManager.setToolTip('Nexus Universal Continuity');
-    } catch (_) {}
+      if (!Platform.isLinux) await trayManager.setToolTip('Nexus Universal Continuity');
+      return true;
+    } catch (e) {
+      debugPrint('[SystemTray] Menu unavailable: $e');
+      return false;
+    }
   }
 
   @override
@@ -134,7 +133,11 @@ class SystemTrayService with TrayListener, WindowListener {
     // When clicking 'X', hide window to tray instead of quitting
     final isPreventClose = await windowManager.isPreventClose();
     if (isPreventClose) {
-      await windowManager.hide();
+      if (_trayReady) {
+        await windowManager.hide();
+      } else {
+        await _exitApp();
+      }
     }
   }
 

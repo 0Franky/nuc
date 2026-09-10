@@ -2,6 +2,9 @@
 """Exercise real companion IPC and supervisor shutdown without input clients."""
 import argparse
 import json
+import os
+import sys
+import tempfile
 from pathlib import Path
 import re
 import socket
@@ -18,20 +21,38 @@ def main():
     bundle = args.bundle.resolve()
     work = args.work.resolve() / ("input-check-" + uuid.uuid4().hex)
     work.mkdir(parents=True)
+    linux = sys.platform.startswith("linux")
+    environment = os.environ.copy()
+    if linux:
+        runtime_directory = tempfile.TemporaryDirectory(prefix="nxi-")
+        runtime = Path(runtime_directory.name)
+        environment["XDG_RUNTIME_DIR"] = str(runtime)
+    def connect():
+        if not linux:
+            return socket.create_connection(("127.0.0.1", 5252), timeout=.2)
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(.2)
+        try:
+            connection.connect(str(runtime / "lan-mouse-socket.sock"))
+        except OSError:
+            connection.close()
+            raise
+        return connection
+    suffix = "" if linux else ".exe"
     config = work / "config.toml"
     config.write_text('port = 4243\n[authorized_fingerprints]\n', encoding="utf-8")
     for crash in (False, True):
         try:
-            existing = socket.create_connection(("127.0.0.1", 5252), timeout=.2)
+            existing = connect()
         except OSError:
             pass
         else:
             existing.close()
             raise RuntimeError("An input engine is already running; no test started")
-        process = subprocess.Popen([str(bundle / "nexus-input-host.exe"), str(bundle / "lan-mouse.exe"),
+        process = subprocess.Popen([str(bundle / ("nexus-input-host" + suffix)), str(bundle / ("lan-mouse" + suffix)),
             "--config", str(config), "--cert-path", str(work / "identity.pem"), "daemon"],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW)
+            env=environment, creationflags=0 if linux else subprocess.CREATE_NO_WINDOW)
         try:
             process.stdin.write(b"\n"); process.stdin.flush()
             connection = None
@@ -40,7 +61,7 @@ def main():
                 if process.poll() is not None:
                     raise RuntimeError(process.stderr.read().decode(errors="replace"))
                 try:
-                    connection = socket.create_connection(("127.0.0.1", 5252), timeout=.2)
+                    connection = connect()
                     break
                 except OSError:
                     time.sleep(.1)
@@ -57,9 +78,11 @@ def main():
                         states.update(event)
                 assert re.fullmatch(r"(?:[0-9a-f]{2}:){31}[0-9a-f]{2}", states["PublicKeyFingerprint"])
                 # Enable events can arrive after the first sync snapshot.
-                while states.get("CaptureStatus") != "Enabled" or states.get("EmulationStatus") != "Enabled":
+                while (not linux and states.get("CaptureStatus") != "Enabled") or states.get("EmulationStatus") != "Enabled":
                     event = json.loads(events.readline())
                     if isinstance(event, dict): states.update(event)
+            if linux:
+                print("Linux capabilities: capture=" + str(states.get("CaptureStatus")) + ", emulation=" + str(states.get("EmulationStatus")))
             if crash:
                 process.kill()  # Windows job must also terminate the native child.
             else:
@@ -68,16 +91,19 @@ def main():
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 try:
-                    probe = socket.create_connection(("127.0.0.1", 5252), timeout=.2)
+                    probe = connect()
                 except OSError:
                     break
                 probe.close(); time.sleep(.1)
             else:
                 raise AssertionError("Input engine survived its supervisor")
-            print("PASS: native IPC, capture/emulation readiness, " + ("supervisor crash cleanup" if crash else "parent EOF cleanup"))
+            print("PASS: native IPC, supported backend readiness, " + ("supervisor crash cleanup" if crash else "parent EOF cleanup"))
         finally:
             if process.poll() is None:
                 process.kill(); process.wait(timeout=5)
+
+    if linux:
+        runtime_directory.cleanup()
 
 
 if __name__ == "__main__":

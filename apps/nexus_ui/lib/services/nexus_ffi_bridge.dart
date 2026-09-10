@@ -86,10 +86,10 @@ class NexusFfiBridge {
     final curr = Directory.current.path;
     final searchPaths = <String>[
       '$exeDir/$libraryName', '$exeDir/lib/$libraryName',
-      '$curr/$libraryName', '$curr/dist/${Platform.operatingSystem}/$libraryName',
       for (final root in [curr, '$curr/..', '$curr/../..']) ...[
         '$root/target/release/$libraryName', '$root/target/debug/$libraryName',
       ],
+      '$curr/$libraryName', '$curr/dist/${Platform.operatingSystem}/$libraryName',
     ];
 
     for (final path in searchPaths) {
@@ -210,7 +210,7 @@ class NexusFfiBridge {
     parsed["proximity_motion"] = LanSyncService.instance.proximityMotion;
     parsed["estimated_distance_m"] = LanSyncService.instance.estimatedDistanceMeters;
     parsed["discovered_peers"] = LanSyncService.instance.discoveredPeers;
-    parsed["device_id"] = LanSyncService.instance.deviceId;
+    parsed["device_id"] = _deviceId ?? parsed["device_id"];
     return parsed;
   }
 

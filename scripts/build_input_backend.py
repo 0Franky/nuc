@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build and bundle the pinned, separate LAN Mouse input process (no GTK)."""
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -46,10 +47,14 @@ def main():
     run(*command, cwd=source)
     args.dest.mkdir(parents=True, exist_ok=True)
     binary = "lan-mouse.exe" if sys.platform == "win32" else "lan-mouse"
-    shutil.copy2(source / "target/release" / binary, args.dest / binary)
+    source_target = Path(json.loads(subprocess.check_output(
+        [cargo, "metadata", "--format-version", "1", "--no-deps"], cwd=source))["target_directory"])
+    shutil.copy2(source_target / "release" / binary, args.dest / binary)
     supervisor = "nexus-input-host.exe" if sys.platform == "win32" else "nexus-input-host"
     run(cargo, "build", "--release", "--bin", "nexus-input-host", cwd=ROOT)
-    shutil.copy2(ROOT / "target/release" / supervisor, args.dest / supervisor)
+    root_target = Path(json.loads(subprocess.check_output(
+        [cargo, "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT))["target_directory"])
+    shutil.copy2(root_target / "release" / supervisor, args.dest / supervisor)
     shutil.copy2(source / "LICENSE", args.dest / "LICENSE-LAN-MOUSE")
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=source).decode().split("\0")
     with zipfile.ZipFile(args.dest / "lan-mouse-source.zip", "w", zipfile.ZIP_DEFLATED) as archive:

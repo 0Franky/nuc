@@ -90,3 +90,9 @@ vicino, pulsante e canvas adattivo), 5 test Rust media superati, `flutter analyz
 senza segnalazioni. Revisione indipendente: corretti peer fuori dal canvas e
 selezione di endpoint input non validi; seconda revisione senza ulteriori rilievi.
 Il rilevamento BLE non sovrascrive la disposizione condivisa.
+
+
+Aggiornamento canvas e pacchetti: tutti i nodi, incluso il locale, sono trascinabili
+sul piano globale; la disposizione non cambia origine a seconda della macchina.
+Per launcher Linux, dipendenze e verifiche effettive consultare il
+[registro operativo aggiornato](../2026-09-10-topology-linux-validation.md).

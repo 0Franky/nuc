@@ -89,3 +89,7 @@ Questa documentazione è divisa in 5 sezioni principali:
    - Da Fase 0 (Proof of Concept) a Release 1.0
 
 2. [02. TODO: input condiviso ed estensione schermo Windows/Linux](./05-roadmap-and-milestones/02-shared-input-and-extended-display.md)
+
+## Stato operativo corrente
+
+- [Topologia, dipendenze e pacchetto Linux: cause, verifiche e attività aperte](2026-09-10-topology-linux-validation.md)

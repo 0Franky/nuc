@@ -143,49 +143,41 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
   }
 
   Future<void> _pickAndSendRealFile() async {
-    String? selectedPath;
-    String? selectedName;
-    int? selectedSize;
-
-    if (Platform.isWindows) {
-      try {
-        final result = await FilePicker.platform.pickFiles();
-        if (result != null && result.files.isNotEmpty) {
-          final picked = result.files.first;
-          selectedPath = picked.path;
-          selectedName = picked.name;
-          selectedSize = picked.size;
-        } else {
-          return;
-        }
-      } catch (e) {
-        NexusLogger.log("FILE_PICKER", "FilePicker fallback on Windows: $e");
-        selectedPath = await _pickFileWindowsFallback();
-        if (selectedPath == null) return;
-        final f = File(selectedPath);
-        selectedName = selectedPath.split(Platform.pathSeparator).last;
-        selectedSize = await f.length();
+    PlatformFile? picked;
+    try {
+      picked = await FilePicker.pickFile();
+    } catch (e) {
+      NexusLogger.log('FILE_PICKER', 'File picker error: $e');
+      if (Platform.isWindows) {
+        final path = await _pickFileWindowsFallback();
+        if (path == null) return;
+        final size = await File(path).length();
+        if (mounted) await _streamRealFile(path, path.split(Platform.pathSeparator).last, size);
+      } else if (mounted) {
+        _showManualFileSelectDialog(context, error: e.toString());
       }
-    } else {
-      FilePickerResult? result;
-      try {
-        result = await FilePicker.platform.pickFiles();
-      } catch (e) {
-        NexusLogger.log("FILE_PICKER", "File picker error: $e");
-        if (mounted) {
-          _showManualFileSelectDialog(context, error: e.toString());
-        }
-        return;
-      }
-      if (result == null || result.files.isEmpty) return;
-      final picked = result.files.first;
-      selectedPath = picked.path;
-      selectedName = picked.name;
-      selectedSize = picked.size;
+      return;
     }
-
-    if (selectedPath == null || selectedPath.isEmpty) return;
-    await _streamRealFile(selectedPath, selectedName, selectedSize);
+    if (picked == null) return;
+    Directory? temporary;
+    File? cached;
+    try {
+      var path = picked.path;
+      if (path == null) {
+        // SAF/content URIs need a bounded-memory local stream for the transport.
+        temporary = await Directory.systemTemp.createTemp('nexus-picker-');
+        cached = File('${temporary.path}/payload');
+        await picked.readAsByteStream().cast<List<int>>().pipe(cached.openWrite());
+        path = cached.path;
+      }
+      final size = await File(path).length();
+      if (mounted) await _streamRealFile(path, picked.name, size);
+    } catch (e) {
+      if (mounted) _showManualFileSelectDialog(context, error: e.toString());
+    } finally {
+      if (cached != null && await cached.exists()) await cached.delete();
+      if (temporary != null && await temporary.exists()) await temporary.delete();
+    }
   }
 
   Future<void> _streamRealFile(String filePath, String name, int sizeBytes) async {

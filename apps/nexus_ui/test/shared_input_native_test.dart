@@ -26,13 +26,15 @@ void main() {
       await service.setEnabled(true);
       expect(service.error, isNull);
       expect(service.running, true);
+      final expectCapture = Platform.environment['NEXUS_INPUT_TEST_EXPECT_CAPTURE'] != 'disabled';
       final end = DateTime.now().add(const Duration(seconds: 8));
-      while (!(service.captureReady &&
+      while (!((!expectCapture || service.captureReady) &&
           service.emulationReady &&
           service.fingerprint != null)) {
         if (DateTime.now().isAfter(end)) fail(service.status);
         await Future<void>.delayed(const Duration(milliseconds: 20));
       }
+      expect(service.captureReady, expectCapture);
       expect(lan.sharedInputMetadata?['fingerprint'], service.fingerprint);
       await service.setEnabled(false);
       expect(service.running, false);
@@ -40,7 +42,7 @@ void main() {
       expect(lan.sharedInputMetadata, isNull);
     },
     skip:
-        !Platform.isWindows ||
+        !(Platform.isWindows || Platform.isLinux) ||
         Platform.environment['NEXUS_INPUT_TEST_ENGINE'] == null,
     timeout: const Timeout(Duration(seconds: 35)),
   );

@@ -56,3 +56,6 @@ daemon_stderr.log
 
 # Temporary files and scratches
 scratch/
+
+# Python build/check script bytecode
+__pycache__/

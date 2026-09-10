@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+ROOT_DIR="${NEXUS_DIR:-$(cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)}"
+UPDATE=1
+BUILD=1
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-update) UPDATE=0; shift ;;
+    --no-build) BUILD=0; shift ;;
+    --help) echo "Usage: nexus-run [--no-update] [--no-build] [-- app arguments]"; exit 0 ;;
+    --) shift; break ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+cd "$ROOT_DIR"
+[ ! -f "$HOME/.cargo/env" ] || source "$HOME/.cargo/env"
+export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export LIBRARY_PATH="$HOME/.local/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+if [ "$UPDATE" = 1 ]; then
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "Local changes present; keeping this checkout. Commit them before updating." >&2
+  elif ! git pull --ff-only; then
+    echo "Update unavailable; using the current local revision." >&2
+  fi
+fi
+if command -v systemctl >/dev/null && systemctl --user is-active --quiet nexus-daemon.service; then
+  echo "A separate nexus-daemon.service is active. Stop it with systemctl --user stop nexus-daemon before launching the desktop app." >&2
+  exit 1
+fi
+# Replace only processes whose executable belongs to this checkout, including
+# the legacy launcher daemon. Never pkill another installation by name.
+if command -v pgrep >/dev/null; then
+  for old_pid in $(pgrep -u "$(id -u)" -x 'nexus-daemon|nexus_ui' || true); do
+    old_exe="$(readlink "/proc/$old_pid/exe" 2>/dev/null || true)"
+    old_exe="${old_exe% (deleted)}"
+    case "$old_exe" in
+      "$ROOT_DIR/target/release/nexus-daemon"|"$ROOT_DIR/dist/linux/nexus-daemon"|"$ROOT_DIR/dist/linux/nexus_ui"|"$ROOT_DIR/apps/nexus_ui/build/linux/"*/bundle/nexus_ui)
+        echo "Stopping previous Nexus process from this checkout (PID $old_pid)."
+        kill -TERM "$old_pid"
+        for attempt in $(seq 1 50); do
+          [ -e "/proc/$old_pid/exe" ] || break
+          sleep 0.1
+        done
+        if [ -e "/proc/$old_pid/exe" ]; then echo "Previous process did not exit; aborting update." >&2; exit 1; fi
+        ;;
+    esac
+  done
+fi
+if [ "$BUILD" = 1 ]; then bash "$ROOT_DIR/scripts/build_linux.sh"; fi
+BUNDLE="$ROOT_DIR/dist/linux"
+for binary in nexus_ui input-engine/lan-mouse input-engine/nexus-input-host; do
+  test -x "$BUNDLE/$binary" || { echo "Missing $binary: run bash scripts/build_linux.sh" >&2; exit 1; }
+done
+test -f "$BUNDLE/lib/libnexus_ffi.so" || { echo "Missing native library in bundle" >&2; exit 1; }
+# The app hosts the Rust core via FFI. Do not spawn a competing daemon.
+export LD_LIBRARY_PATH="$BUNDLE/lib:$HOME/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cd "$BUNDLE"
+exec "$BUNDLE/nexus_ui" "$@"

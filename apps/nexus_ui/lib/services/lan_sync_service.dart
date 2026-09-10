@@ -306,6 +306,41 @@ class LanSyncService extends ChangeNotifier {
     'self': const Offset(-120.0, 0.0),
   };
 
+  Offset _planeOrigin = Offset.zero;
+  Map<String, Offset> get topologyPoints {
+    final origin = _sharedTopology?.points[deviceId] ?? _planeOrigin;
+    return {
+      ...?_sharedTopology?.points,
+      deviceId: origin,
+      for (final peer in discoveredPeers)
+        if (peer['id'] != deviceId)
+          peer['id'] as String: _sharedTopology?.points[peer['id']] ?? origin + getDeviceOffset(peer['id'] as String),
+    };
+  }
+
+  void moveTopologyDevice(String id, Offset position) {
+    final points = topologyPoints;
+    if (!points.containsKey(id)) return;
+    points[id] = position;
+    final origin = points[deviceId]!;
+    final next = SharedTopology((_sharedTopology?.revision ?? 0) + 1, deviceId, points);
+    if (SharedTopology.parse(next.toJson()) == null) return;
+    _planeOrigin = origin;
+    if (_sharedTopology != null) {
+      _sharedTopology = next;
+      _projectTopology();
+      _broadcastTopology();
+    } else {
+      customDeviceOffsets..clear()..addAll(next.relativeTo(deviceId));
+    }
+    final target = selectedTargetDeviceId;
+    if (target != null && customDeviceOffsets.containsKey(target)) {
+      updateDeviceOffset(target, customDeviceOffsets[target]!, syncNetwork: false);
+    }
+    unawaited(_saveTopology());
+    notifyListeners();
+  }
+
   SharedTopology? _sharedTopology;
   bool get topologySyncEnabled => _sharedTopology != null;
   Future<void> _topologySave = Future<void>.value();
@@ -332,7 +367,7 @@ class LanSyncService extends ChangeNotifier {
 
   Future<void> synchronizeTopology() async {
     final previous = _sharedTopology;
-    final origin = previous?.points[deviceId] ?? Offset.zero;
+    final origin = previous?.points[deviceId] ?? _planeOrigin;
     final points = <String, Offset>{...?previous?.points, deviceId: origin};
     for (final peer in discoveredPeers) {
       final id = peer['id'] as String;
@@ -374,6 +409,7 @@ class LanSyncService extends ChangeNotifier {
   }
 
   Future<void> _saveTopology() {
+    final planeOrigin = jsonEncode([_planeOrigin.dx, _planeOrigin.dy]);
     final local = jsonEncode(customDeviceOffsets.map((id, offset) => MapEntry(id, [offset.dx, offset.dy])));
     final shared = _sharedTopology == null ? null : jsonEncode(_sharedTopology!.toJson());
     _topologySave = _topologySave.catchError((Object e) {
@@ -381,6 +417,7 @@ class LanSyncService extends ChangeNotifier {
     }).then((_) async {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('shared_input_topology', local);
+      await prefs.setString('topology_plane_origin', planeOrigin);
       if (shared != null) await prefs.setString('shared_topology_v1', shared);
     });
     return _topologySave;
@@ -420,6 +457,10 @@ class LanSyncService extends ChangeNotifier {
         final rawHex = List.generate(32, (_) => r.nextInt(16).toRadixString(16)).join();
         deviceId = '${rawHex.substring(0,8)}-${rawHex.substring(8,12)}-4${rawHex.substring(13,16)}-a${rawHex.substring(17,20)}-${rawHex.substring(20,32)}';
         await prefs.setString('nexus_device_id', deviceId);
+      }
+      final planeOrigin = jsonDecode(prefs.getString('topology_plane_origin') ?? '[0,0]');
+      if (planeOrigin is List && planeOrigin.length == 2 && planeOrigin.every((v) => v is num && v.isFinite)) {
+        _planeOrigin = Offset((planeOrigin[0] as num).toDouble(), (planeOrigin[1] as num).toDouble());
       }
       final topology = jsonDecode(prefs.getString('shared_input_topology') ?? '{}') as Map;
       for (final entry in topology.entries) {

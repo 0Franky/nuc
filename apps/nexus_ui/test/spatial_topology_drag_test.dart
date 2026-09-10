@@ -50,6 +50,8 @@ void main() {
       final swapButton = find.byTooltip('Inverti Sinistra / Destra');
       expect(swapButton, findsOneWidget);
 
+      await tester.ensureVisible(swapButton);
+      await tester.pumpAndSettle();
       await tester.tap(swapButton);
       await tester.pumpAndSettle();
 
@@ -91,10 +93,8 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      expect(
-        find.text('In ascolto LAN... Accendi Nexus su un altro dispositivo per disporre gli schermi'),
-        findsOneWidget,
-      );
+      expect(find.byKey(ValueKey('topology-peer-${LanSyncService.instance.deviceId}')), findsOneWidget);
+      expect(find.byKey(const ValueKey('topology-peer-test-peer-01')), findsNothing);
       expect(find.text('PC Principale'), findsNothing);
       expect(find.text('Telefono (Tu)'), findsNothing);
     });
