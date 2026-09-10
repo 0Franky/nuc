@@ -47,3 +47,9 @@ Aggiornare sia il client telefono sia il backend/app dei PC: i processi già avv
 ## Pacchetti
 
 Lo ZIP Windows contiene app Flutter, plugin, DLL Rust e daemon compilati in release. L’app va avviata tramite `nexus_ui.exe`, dopo aver chiuso la vecchia istanza. L’APK aggiorna il client Android. Per Linux è necessario ricompilare il backend/app dal repository con lo script indicato: non è stato prodotto un pacchetto GUI Linux.
+
+## Verifica sui dispositivi e correzione dello stato discovery
+
+Il controllo ADB dopo l'installazione mostra Windows con nome `Win` e Android con nome `Oppo`. `PC Linux-7D5C` appartiene a un'altra identità; non è una rinomina di Windows. Il telefono ha inoltre mostrato un errore reale del backend Linux: `ydotool` non disponibile. L'avvio dell'interfaccia e la configurazione input del PC Linux restano da verificare su quell'host.
+
+Un test WebSocket ha riprodotto un difetto residuo: dopo `PEER_DISCONNECTED`, un annuncio discovery riportava il peer online pur senza una rotta attiva. Ora la discovery aggiorna i metadati senza attestare una connessione. Gli annunci discovery non possono identificare l'host di un socket; il solo handshake non rende online un peer. La dashboard distingue dispositivi rilevati e connessi, mostra il nome locale e non attribuisce cifratura E2EE a questo collegamento. Il selettore disabilita anche semanticamente i peer offline.

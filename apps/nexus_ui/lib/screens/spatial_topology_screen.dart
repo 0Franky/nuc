@@ -7,6 +7,7 @@ import '../widgets/nexus_card.dart';
 import '../widgets/nexus_pill.dart';
 import '../widgets/spatial_grid_painter.dart';
 import '../widgets/target_device_selector.dart';
+import '../widgets/shared_input_panel.dart';
 
 class SpatialTopologyScreen extends StatefulWidget {
   const SpatialTopologyScreen({super.key});
@@ -17,7 +18,6 @@ class SpatialTopologyScreen extends StatefulWidget {
 
 class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   String _selectedPosition = LanSyncService.instance.spatialPosition;
-  bool _universalControl = LanSyncService.instance.universalControlActive;
   bool _autoLock = LanSyncService.instance.autoLockOnWalkAway;
   bool _autoPauseMedia = LanSyncService.instance.autoPauseMediaOnWalkAway;
   bool _wakeOnApproach = LanSyncService.instance.wakeOnApproach;
@@ -529,18 +529,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Universal Control (Seamless Edge Hop)', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-                  subtitle: const Text('Passa il mouse oltre il bordo dello schermo per controllare l\'altro dispositivo',
-                      style: TextStyle(fontSize: 11.5, color: NexusTheme.textSecondary)),
-                  value: _universalControl,
-                  onChanged: (v) {
-                    setState(() => _universalControl = v);
-                    LanSyncService.instance.universalControlActive = v;
-                    LanSyncService.instance.saveSettingBool('universalControlActive', v);
-                  },
-                ),
+                const SharedInputPanel(),
                 const Divider(),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,

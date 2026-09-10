@@ -65,3 +65,8 @@ Simile ad Apple Universal Control ma compatibile tra **qualsiasi combinazione di
 1. Posizioni i monitor fisici e i dispositivi nella mappa virtuale delle impostazioni (es. Tablet Android a sinistra del monitor Windows).
 2. Muovendo il mouse fisico del PC oltre il bordo sinistro del monitor, il cursore "esce" dallo schermo del PC e "entra" nello schermo del dispositivo adiacente.
 3. La tastiera fisica del PC digita automaticamente sul dispositivo dove si trova il cursore.
+
+
+### Requisiti da implementare e verificare
+
+Per il controllo bidirezionale Windows/Linux, il cambio del dispositivo sorgente e le prove di accettazione, seguire il [TODO del 2026-09-10](../05-roadmap-and-milestones/02-shared-input-and-extended-display.md). La descrizione del comportamento previsto non costituisce una verifica del funzionamento sui dispositivi reali.

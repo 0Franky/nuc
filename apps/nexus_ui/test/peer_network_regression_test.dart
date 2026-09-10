@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:nexus_ui/services/lan_sync_service.dart';
 
 Future<void> until(bool Function() ready) async {
@@ -14,6 +15,7 @@ Future<void> until(bool Function() ready) async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  SharedPreferences.setMockInitialValues({});
   test('real sockets preserve host and relayed peers and send to the requested identity', () async {
     final lan = LanSyncService.instance;
     lan.deviceId = 'this-client';
@@ -59,5 +61,18 @@ void main() {
     remote.add(jsonEncode({'type':'PEER_DISCONNECTED','id':'phone'}));
     await until(() => lan.discoveredPeers.last['online'] == false);
     expect(lan.socketForDevice('phone'), isNull);
+    // A discovery announcement is not proof of an active data connection.
+    remote.add(jsonEncode({'type':'PEER_ANNOUNCE','metadata_source':'discovery','id':'phone','name':'Old Phone'}));
+    remote.add(jsonEncode({'type':'INPUT_STATUS','device_id':'linux-host','ok':true}));
+    await until(() => lan.inputError == null);
+    expect(lan.discoveredPeers.last['online'], false);
+    expect(lan.discoveredPeers.last['name'], 'Phone');
+    remote.add(jsonEncode({'type':'PEER_METADATA','id':'linux-host','shared_input': {'fingerprint':'test-fingerprint','port':4243}}));
+    await until(() => lan.discoveredPeers.first['shared_input'] != null);
+    remote.add(jsonEncode({'type':'SPATIAL_ARRANGEMENT','sender_device_id':'linux-host','peer_id':'this-client','offset_x':120,'offset_y':0}));
+    await until(() => lan.customDeviceOffsets['linux-host']?.dx == -120);
+    expect(lan.discoveredPeers.length, 2);
+
+
   });
 }

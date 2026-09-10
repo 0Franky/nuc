@@ -12,5 +12,7 @@ mkdir -p "$DIST_DIR/lib"
 cp -a "$BUNDLE_DIR/." "$DIST_DIR/"
 cp "$ROOT_DIR/target/release/nexus-daemon" "$DIST_DIR/"
 cp "$ROOT_DIR/target/release/libnexus_ffi.so" "$DIST_DIR/lib/"
+python3 "$ROOT_DIR/scripts/build_input_backend.py" --dest "$DIST_DIR/input-engine"
+
 echo "Linux build available in $DIST_DIR"
 echo "Before remote input, run: $ROOT_DIR/scripts/check_linux_input.sh"

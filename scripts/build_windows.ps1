@@ -57,3 +57,7 @@ Write-Host " - nexus_ui.exe     (Flutter GUI Application)"
 Write-Host " - nexus_ffi.dll    (Real-time FFI Core)"
 Write-Host " - dist/extensions/nexus_browser_ext_v1.0.0.zip"
 Write-Host "-----------------------------------------------------" -ForegroundColor Cyan
+
+# Bundle the native input-sharing process from its pinned source revision.
+python "$PSScriptRoot/build_input_backend.py" --dest "$DistDir/input-engine"
+if ($LASTEXITCODE -ne 0) { throw "Input backend build failed" }

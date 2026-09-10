@@ -1,3 +1,4 @@
+import 'shared_input_service.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -143,6 +144,7 @@ class SystemTrayService with TrayListener, WindowListener {
   }
 
   Future<void> _exitApp() async {
+    await SharedInputService.instance.shutdown();
     await windowManager.destroy();
     exit(0);
   }

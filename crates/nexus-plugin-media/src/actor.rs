@@ -14,6 +14,7 @@ use crate::session::{append_log, ActiveMediaSession};
 pub struct MediaPluginActor {
     pub device_id: DeviceId,
     device_name: Arc<RwLock<String>>,
+    shared_input_metadata: Arc<RwLock<serde_json::Value>>,
     peers: Arc<RwLock<std::collections::BTreeMap<String, (serde_json::Value, tokio::sync::mpsc::UnboundedSender<String>)>>>,
     current_session: Arc<RwLock<Option<ActiveMediaSession>>>,
     connected_clients: Arc<RwLock<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
@@ -25,6 +26,7 @@ impl MediaPluginActor {
         Self {
             device_id,
             device_name: Arc::new(RwLock::new(format!("Nexus-{}", &device_id.to_string()[..4]))),
+            shared_input_metadata: Arc::new(RwLock::new(serde_json::Value::Null)),
             peers: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             current_session: Arc::new(RwLock::new(None)),
             connected_clients: Arc::new(RwLock::new(Vec::new())),
@@ -242,6 +244,7 @@ impl NexusActor for MediaPluginActor {
                                     "type": "PEER_ANNOUNCE",
                                     "name": self_name,
                                     "is_host": true,
+                                    "shared_input": actor.shared_input_metadata.read().await.clone(),
                                     "id": actor.device_id.to_string(),
                                     "device_id": actor.device_id.to_string(),
                                     "device_type": "Desktop",
@@ -340,12 +343,14 @@ impl NexusActor for MediaPluginActor {
                                                 if peer_id == actor.device_id {
                                                     if addr.ip().is_loopback() && !peer_name.trim().is_empty() {
                                                         *actor.device_name.write().await = peer_name.clone();
+                                                        *actor.shared_input_metadata.write().await = json_val["shared_input"].clone();
                                                         if let Err(error) = nexus_crypto::DeviceIdentity::save_device_name(&peer_name) {
                                                             tracing::warn!("Cannot persist device name: {error}");
                                                         }
                                                         let metadata = serde_json::json!({
                                                             "type": "PEER_METADATA", "id": actor.device_id.to_string(),
                                                             "name": peer_name, "device_type": "Desktop", "os": std::env::consts::OS,
+                                                            "shared_input": actor.shared_input_metadata.read().await.clone(),
                                                         }).to_string();
                                                         actor.connected_clients.write().await.retain(|c| c.send(metadata.clone()).is_ok());
                                                     }
@@ -399,6 +404,7 @@ impl NexusActor for MediaPluginActor {
                                                     "os": peer_os_str,
                                                     "spatial_position": peer_pos_str,
                                                     "ip": addr.ip().to_string(),
+                                                    "shared_input": json_val["shared_input"],
                                                 });
                                                 actor.peers.write().await.insert(peer_id.to_string(), (announce_msg.clone(), tx.clone()));
                                                 if let Ok(announce_str) =

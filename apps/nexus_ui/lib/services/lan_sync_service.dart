@@ -132,10 +132,14 @@ class LanSyncService extends ChangeNotifier {
     String? os,
     String? spatialPosition,
     int namePriority = 1,
+    bool discoveryOnly = false,
+    Map<String, dynamic>? sharedInput,
+    bool updateSharedInput = false,
   }) {
     if (id.isEmpty || id == deviceId) return;
     if (ip != null && _localIps.contains(ip)) return;
     _knownPeerIds.add(id);
+    final online = !discoveryOnly || socketForDevice(id) != null;
 
     // An IP is a route, not an identity: a router can announce several peers.
     var existingIndex = discoveredPeers.indexWhere((p) => p['id'] == id);
@@ -155,7 +159,7 @@ class LanSyncService extends ChangeNotifier {
       if (deviceType != null && deviceType.isNotEmpty) existing['device_type'] = deviceType;
       if (os != null && os.isNotEmpty) existing['os'] = os;
       if (spatialPosition != null && spatialPosition.isNotEmpty) existing['spatial_position'] = spatialPosition;
-      existing['online'] = true;
+      existing['online'] = online;
     } else {
       final fallbackType = (name.toLowerCase().contains("phone") ||
               name.toLowerCase().contains("smartphone") ||
@@ -167,7 +171,7 @@ class LanSyncService extends ChangeNotifier {
         "id": id,
         "name": name.trim().isEmpty ? "Dispositivo ${id.substring(0, math.min(4, id.length))}" : name.trim(),
         "ip": ip,
-        "online": true,
+        "online": online,
         "name_priority": namePriority,
         "device_type": deviceType ?? fallbackType,
         "os": os ?? "Unknown",
@@ -178,6 +182,11 @@ class LanSyncService extends ChangeNotifier {
       final provisionalId = 'peer-nexus-$ip';
       if (selectedTargetDeviceId == provisionalId) selectedTargetDeviceId = id;
       discoveredPeers.removeWhere((peer) => peer['id'] == provisionalId);
+    }
+    if (updateSharedInput) {
+      for (final peer in discoveredPeers) {
+        if (peer['id'] == id) peer['shared_input'] = sharedInput;
+      }
     }
     if (selectedTargetDeviceId == null && discoveredPeers.isNotEmpty) {
       selectedTargetDeviceId = discoveredPeers.first['id'] as String?;
@@ -248,6 +257,7 @@ class LanSyncService extends ChangeNotifier {
       "device_type": deviceType,
       "os": Platform.operatingSystem,
       "spatial_position": spatialPosition,
+      "shared_input": sharedInputMetadata,
     };
     final encoded = jsonEncode(meta);
     for (final ws in _peerSockets.values) {
@@ -272,7 +282,8 @@ class LanSyncService extends ChangeNotifier {
   bool autoLockOnWalkAway = true;
   bool autoPauseMediaOnWalkAway = true;
   bool wakeOnApproach = true;
-  bool universalControlActive = true;
+  bool universalControlActive = false;
+  Map<String, dynamic>? sharedInputMetadata;
   bool bleSpatialAutoDetect = true; // Active by default when Bluetooth is available
   bool isBleHardwareAvailable = false; // Real OS radio check (Windows Radio / Mobile Adapter)
   String lastAutoDeterminedPosition = "Left";
@@ -293,7 +304,14 @@ class LanSyncService extends ChangeNotifier {
     if (syncNetwork) {
       final targetPeer = (id == 'self' || id.isEmpty) ? (selectedTargetDeviceId ?? '') : id;
       sendSpatialArrangement(targetPeer, spatialPosition, customOffset: offset);
+      unawaited(_saveTopology());
+      notifyListeners();
     }
+  }
+
+  Future<void> _saveTopology() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('shared_input_topology', jsonEncode(customDeviceOffsets.map((id, offset) => MapEntry(id, [offset.dx, offset.dy]))));
   }
 
   Offset getDeviceOffset(String id) {
@@ -330,6 +348,13 @@ class LanSyncService extends ChangeNotifier {
         final rawHex = List.generate(32, (_) => r.nextInt(16).toRadixString(16)).join();
         deviceId = '${rawHex.substring(0,8)}-${rawHex.substring(8,12)}-4${rawHex.substring(13,16)}-a${rawHex.substring(17,20)}-${rawHex.substring(20,32)}';
         await prefs.setString('nexus_device_id', deviceId);
+      }
+      final topology = jsonDecode(prefs.getString('shared_input_topology') ?? '{}') as Map;
+      for (final entry in topology.entries) {
+        final value = entry.value;
+        if (value is List && value.length == 2 && value.every((v) => v is num)) {
+          customDeviceOffsets[entry.key as String] = Offset((value[0] as num).toDouble(), (value[1] as num).toDouble());
+        }
       }
       _customDeviceName = prefs.getString('nexus_custom_device_name') ?? "";
 
@@ -506,6 +531,8 @@ class LanSyncService extends ChangeNotifier {
                     deviceType: pType,
                     os: pOs,
                     spatialPosition: pPos,
+                    namePriority: 0,
+                    discoveryOnly: true,
                   );
                   if (!_peerSockets.containsKey(senderIp)) {
                     connectToPeer(senderIp);
@@ -837,7 +864,6 @@ class LanSyncService extends ChangeNotifier {
       if (!isLocalLoopback && !isOwnIp) {
         final existingIndex = discoveredPeers.indexWhere((p) => p['ip'] == ip || p['id'] == peerId);
         if (existingIndex >= 0) {
-          discoveredPeers[existingIndex]['online'] = true;
           discoveredPeers[existingIndex]['ip'] = ip;
         } else {
           final peerName = "Dispositivo ($ip)";
@@ -845,7 +871,7 @@ class LanSyncService extends ChangeNotifier {
             "id": peerId,
             "name": peerName,
             "ip": ip,
-            "online": true,
+            "online": false,
             "device_type": "Desktop",
             "os": "Unknown",
             "spatial_position": "Center",
@@ -1188,7 +1214,23 @@ class LanSyncService extends ChangeNotifier {
               return;
             }
 
-            if (json['type'] == 'PEER_METADATA' || json['type'] == 'SPATIAL_ARRANGEMENT' || json['type'] == 'PEER_ANNOUNCE') {
+            if (json['type'] == 'SPATIAL_ARRANGEMENT') {
+              final sender = json['sender_device_id'] as String?;
+              if (json['peer_id'] == deviceId && sender != null && sender != deviceId &&
+                  (_socketPeerIds[ip] == sender || (_peerRoutes[sender]?.contains(ip) ?? false))) {
+                final x = json['offset_x'];
+                final y = json['offset_y'];
+                if (x is num && y is num && x.isFinite && y.isFinite) {
+                  customDeviceOffsets[sender] = Offset(-x.toDouble(), -y.toDouble());
+                  unawaited(_saveTopology());
+                  notifyListeners();
+                }
+              }
+              _topologyController.add(json);
+              return;
+            }
+
+            if (json['type'] == 'PEER_METADATA' || json['type'] == 'PEER_ANNOUNCE') {
               NexusLogger.log("LAN_SYNC", "Received topology/metadata update: $json");
               final pId = json['id'] as String? ?? json['device_id'] as String? ?? json['sender_device_id'] as String? ?? '';
               final pName = json['name'] as String? ?? json['sender_device'] as String? ?? '';
@@ -1197,7 +1239,7 @@ class LanSyncService extends ChangeNotifier {
               final peerPos = json['spatial_position'] as String?;
 
               final isHost = json['is_host'] == true ||
-                  (!_socketPeerIds.containsKey(ip) && json['type'] == 'PEER_ANNOUNCE');
+                  (!_socketPeerIds.containsKey(ip) && json['type'] == 'PEER_ANNOUNCE' && json['metadata_source'] != 'discovery');
               if (isHost && pId.isNotEmpty) {
                 _socketPeerIds[ip] = pId;
                 if (isLocalLoopback) {
@@ -1216,6 +1258,9 @@ class LanSyncService extends ChangeNotifier {
                   os: peerOs,
                   spatialPosition: peerPos,
                   namePriority: json['metadata_source'] == 'discovery' ? 0 : 2,
+                  discoveryOnly: json['metadata_source'] == 'discovery',
+                  sharedInput: json['shared_input'] as Map<String, dynamic>?,
+                  updateSharedInput: json.containsKey('shared_input') && json['metadata_source'] != 'discovery',
                 );
                 if (json['metadata_source'] != 'discovery') {
                   _peerRoutes.putIfAbsent(pId, () => <String>{}).add(ip);
@@ -1552,10 +1597,12 @@ class LanSyncService extends ChangeNotifier {
 
   void sendSpatialArrangement(String peerId, String arrangement, {int width = 1920, int height = 1080, Offset? customOffset}) {
     spatialPosition = arrangement;
-    if (_ws != null && isConnected) {
+    final socket = socketForDevice(peerId);
+    if (socket != null) {
       final msg = {
         "type": "SPATIAL_ARRANGEMENT",
         "peer_id": peerId,
+        "sender_device_id": deviceId,
         "spatial_position": arrangement,
         "screen_width": width,
         "screen_height": height,
@@ -1565,7 +1612,7 @@ class LanSyncService extends ChangeNotifier {
         }
       };
       try {
-        _ws!.add(jsonEncode(msg));
+        socket.add(jsonEncode(msg));
         NexusLogger.log("LAN_SYNC", "Sent SPATIAL_ARRANGEMENT: $msg");
       } catch (_) {}
     }

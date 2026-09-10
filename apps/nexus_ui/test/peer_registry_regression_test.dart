@@ -58,4 +58,10 @@ void main() {
     expect(lan.selectedTargetDeviceId, 'linux-pc');
   });
 
+  test('discovery without a route is visible but not connected', () {
+    lan.registerOrUpdatePeer(id: 'linux-pc', name: 'Linux Studio', discoveryOnly: true, namePriority: 0);
+    expect(lan.discoveredPeers.single['online'], false);
+    expect(lan.socketForDevice('linux-pc'), isNull);
+  });
+
 }

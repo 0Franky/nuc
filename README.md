@@ -132,3 +132,7 @@ Tutta la documentazione tecnica, le analisi di stack, i protocolli e le specific
 ## Consolidamento input e dispositivi
 
 Vedi [correzioni, verifiche e requisiti Linux](wiki/2026-09-10-device-input-consolidation.md).
+
+## Input fisico condiviso (integrazione in verifica)
+
+Il controllo mouse/tastiera è configurabile da Schermi & Prossimità. Le build complete includono il processo nativo `input-engine`; aggiornare entrambi i PC. Vedi [stato, uso e limiti Windows/Linux](wiki/05-roadmap-and-milestones/02-shared-input-and-extended-display.md#implementazione-in-corso-integrazione-del-motore-input) e [dipendenze distribuite](THIRD_PARTY.md).

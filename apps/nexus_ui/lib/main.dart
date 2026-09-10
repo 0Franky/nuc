@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'services/shared_input_service.dart';
 import 'services/lan_sync_service.dart';
 import 'services/logger_service.dart';
 import 'services/nexus_ffi_bridge.dart';
@@ -41,6 +43,7 @@ Future<void> main() async {
     NexusLogger.log("INIT", "Native FFI init non-fatal: $e");
   }
   LanSyncService.instance.start();
+  unawaited(SharedInputService.instance.initialize(LanSyncService.instance));
   runApp(const NexusApp());
   SystemTrayService.instance.init();
 

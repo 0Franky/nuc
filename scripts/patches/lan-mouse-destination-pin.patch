@@ -1,0 +1,163 @@
+diff --git a/src/connect.rs b/src/connect.rs
+index 417d913..06712b5 100644
+--- a/src/connect.rs
++++ b/src/connect.rs
+@@ -9,7 +9,7 @@ use std::{
+     io,
+     net::SocketAddr,
+     rc::Rc,
+-    sync::Arc,
++    sync::{Arc, RwLock},
+     time::Duration,
+ };
+ use thiserror::Error;
+@@ -46,6 +46,7 @@ const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+ async fn connect(
+     addr: SocketAddr,
+     cert: Certificate,
++    authorized: Arc<RwLock<HashMap<String, String>>>,
+ ) -> Result<(Arc<dyn Conn + Sync + Send>, SocketAddr), (SocketAddr, LanMouseConnectionError)> {
+     log::info!("connecting to {addr} ...");
+     let conn = Arc::new(
+@@ -65,19 +66,33 @@ async fn connect(
+     tokio::select! {
+         _ = timeout => Err((addr, LanMouseConnectionError::Timeout)),
+         result = DTLSConn::new(conn, config, true, None) => match result {
+-            Ok(dtls_conn) => Ok((Arc::new(dtls_conn), addr)),
++            Ok(dtls_conn) => {
++                // Pin the destination before sending even the first input event.
++                let state = dtls_conn.connection_state().await;
++                let accepted = destination_matches(&state.peer_certificates, addr, &authorized.read().expect("lock"));
++                if !accepted {
++                    let _ = dtls_conn.close().await;
++                    Err((addr, webrtc_dtls::Error::ErrVerifyDataMismatch.into()))
++                } else { Ok((Arc::new(dtls_conn), addr)) }
++            },
+             Err(e) => Err((addr, e.into())),
+         }
+     }
+ }
+ 
++fn destination_matches(certs: &[Vec<u8>], addr: SocketAddr, authorized: &HashMap<String, String>) -> bool {
++    certs.len() == 1 && authorized.get(&crate::crypto::generate_fingerprint(&certs[0]))
++        .is_some_and(|label| label.rsplit('|').next() == Some(addr.to_string().as_str()))
++}
++
+ async fn connect_any(
+     addrs: &[SocketAddr],
+     cert: Certificate,
++    authorized: Arc<RwLock<HashMap<String, String>>>,
+ ) -> Result<(Arc<dyn Conn + Send + Sync>, SocketAddr), LanMouseConnectionError> {
+     let mut joinset = JoinSet::new();
+     for &addr in addrs {
+-        joinset.spawn_local(connect(addr, cert.clone()));
++        joinset.spawn_local(connect(addr, cert.clone(), authorized.clone()));
+     }
+     loop {
+         match joinset.join_next().await {
+@@ -93,6 +108,7 @@ async fn connect_any(
+ }
+ 
+ pub(crate) struct LanMouseConnection {
++    authorized: Arc<RwLock<HashMap<String, String>>>,
+     cert: Certificate,
+     client_manager: ClientManager,
+     conns: Rc<Mutex<HashMap<SocketAddr, Arc<dyn Conn + Send + Sync>>>>,
+@@ -103,9 +119,10 @@ pub(crate) struct LanMouseConnection {
+ }
+ 
+ impl LanMouseConnection {
+-    pub(crate) fn new(cert: Certificate, client_manager: ClientManager) -> Self {
++    pub(crate) fn new(cert: Certificate, client_manager: ClientManager, authorized: Arc<RwLock<HashMap<String, String>>>) -> Self {
+         let (recv_tx, recv_rx) = channel();
+         Self {
++            authorized,
+             cert,
+             client_manager,
+             conns: Default::default(),
+@@ -161,6 +178,7 @@ impl LanMouseConnection {
+                 self.connecting.clone(),
+                 self.recv_tx.clone(),
+                 self.ping_response.clone(),
++                self.authorized.clone(),
+             ));
+         }
+         Err(LanMouseConnectionError::NotConnected)
+@@ -175,6 +193,7 @@ async fn connect_to_handle(
+     connecting: Rc<Mutex<HashSet<ClientHandle>>>,
+     tx: Sender<(ClientHandle, ProtoEvent)>,
+     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
++    authorized: Arc<RwLock<HashMap<String, String>>>,
+ ) -> Result<(), LanMouseConnectionError> {
+     log::info!("client {handle} connecting ...");
+     // sending did not work, figure out active conn.
+@@ -185,7 +204,7 @@ async fn connect_to_handle(
+             .map(|a| SocketAddr::new(a, port))
+             .collect::<Vec<_>>();
+         log::info!("client ({handle}) connecting ... (ips: {addrs:?})");
+-        let res = connect_any(&addrs, cert).await;
++        let res = connect_any(&addrs, cert, authorized).await;
+         let (conn, addr) = match res {
+             Ok(c) => c,
+             Err(e) => {
+@@ -308,3 +327,47 @@ async fn disconnect(
+     let active: Vec<SocketAddr> = conns.lock().await.keys().copied().collect();
+     log::info!("active connections: {active:?}");
+ }
++
++#[cfg(test)]
++mod nexus_pin_tests {
++    use super::*;
++    #[test]
++    fn destination_certificate_must_match_the_approved_endpoint() {
++        let cert = vec![1,2,3];
++        let fp = crate::crypto::generate_fingerprint(&cert);
++        let address = "192.0.2.1:4243".parse().unwrap();
++        let keys = HashMap::from([(fp, "pc-id|192.0.2.1:4243".into())]);
++        assert!(destination_matches(&[cert.clone()], address, &keys));
++        assert!(!destination_matches(&[vec![4,5,6]], address, &keys));
++        assert!(!destination_matches(&[cert], "192.0.2.2:4243".parse().unwrap(), &keys));
++        assert!(!destination_matches(&[], address, &keys));
++    }
++}
++
++#[cfg(test)]
++mod nexus_dtls_tests {
++    use super::*;
++    use webrtc_util::conn::Listener;
++    #[tokio::test]
++    async fn handshake_accepts_only_the_pinned_destination() {
++        for correct in [true, false] {
++            let server_cert = Certificate::generate_self_signed(["ignored".into()]).unwrap();
++            let other_cert = Certificate::generate_self_signed(["ignored".into()]).unwrap();
++            let pin = crate::crypto::certificate_fingerprint(if correct { &server_cert } else { &other_cert });
++            let listener = webrtc_dtls::listener::listen("127.0.0.1:0", Config {
++                certificates: vec![server_cert],
++                extended_master_secret: ExtendedMasterSecretType::Require,
++                ..Default::default()
++            }).await.unwrap();
++            let addr = listener.addr().await.unwrap();
++            let keys = Arc::new(RwLock::new(HashMap::from([(pin, format!("pc|{addr}"))])));
++            let client_cert = Certificate::generate_self_signed(["ignored".into()]).unwrap();
++            let (accepted, outgoing) = tokio::join!(listener.accept(), connect(addr, client_cert, keys));
++            assert!(accepted.is_ok());
++            assert_eq!(outgoing.is_ok(), correct);
++            if let Ok((connection, _)) = outgoing { let _ = connection.close().await; }
++            if let Ok((connection, _)) = accepted { let _ = connection.close().await; }
++            listener.close().await.unwrap();
++        }
++    }
++}
+diff --git a/src/service.rs b/src/service.rs
+index bf782c7..12ea944 100644
+--- a/src/service.rs
++++ b/src/service.rs
+@@ -94,7 +94,7 @@ impl Service {
+         // listener + connection
+         let listener =
+             LanMouseListener::new(config.port(), cert.clone(), authorized_keys.clone()).await?;
+-        let conn = LanMouseConnection::new(cert.clone(), client_manager.clone());
++        let conn = LanMouseConnection::new(cert.clone(), client_manager.clone(), authorized_keys.clone());
+ 
+         // input capture + emulation
+         let capture_backend = config.capture_backend().map(|b| b.into());

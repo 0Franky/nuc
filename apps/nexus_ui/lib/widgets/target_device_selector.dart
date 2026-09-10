@@ -130,8 +130,7 @@ class TargetDeviceSelector extends StatelessWidget {
                     color: Colors.transparent,
                     child: InkWell(
                       borderRadius: BorderRadius.circular(10),
-                      onTap: () {
-                        if (!online) return;
+                      onTap: !online ? null : () {
                         lan.selectTargetDevice(id);
                         onDeviceSelected?.call(id);
                       },

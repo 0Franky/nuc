@@ -25,8 +25,8 @@
 | **Flusso 3** | **Puntatore ad Aria Giroscopico (Laser)** | ✅ **Operativo** | Sensori orientamento mobile proiettati su schermo PC in tempo reale. |
 | **Flusso 3** | **Tastiera Remota, Macro & Digitazione Testo** | ✅ **Operativo** | Tasti speciali (Esc, Tab, Ctrl, Alt, Win), macro veloci e modale digitazione Unicode. |
 | **Flusso 4** | **Topologia Spaziale Draggable (2D Canvas)** | ✅ **Operativo** | Quadrati interattivi trascinabili per riordinare display e descrizioni traiettoria. |
-| **Flusso 4** | **Salto Cursore Bordo Schermo (Edge Hop)** | ✅ **Operativo** | Rilevamento confini X/Y e pacchetto `UNIVERSAL_CONTROL_HOP`. |
-| **Flusso 4** | **Streaming Delta Continuo Cursore Mouse** | ✅ **Operativo** | `UNIVERSAL_CONTROL_DELTA` per controllo fluido del secondo computer. |
+| **Flusso 4** | **Salto Cursore Bordo Schermo (Edge Hop)** | ⏳ *Da completare e verificare* | Requisiti bidirezionali e prove reali nel [TODO input condiviso](02-shared-input-and-extended-display.md). |
+| **Flusso 4** | **Streaming Delta Continuo Cursore Mouse** | ⏳ *Da completare e verificare* | Includere tastiera fisica, cambio sorgente, ritorno locale e guasti di connessione; vedi [TODO](02-shared-input-and-extended-display.md). |
 | **Flusso 4** | **Drag & Drop File Cross-Screen tra PC** | ⏳ *Pianificato* | Trasferimento file trascinando icone oltre il bordo dello schermo. |
 | **Flusso 5** | **Filtro di Kalman RSSI & Stima Distanza** | ✅ **Operativo** | `KalmanRssiFilter` 1D antirumore e classificazione zone (`Near`/`Far`). |
 | **Flusso 5** | **Rilevamento Movimento (`Approaching`/`MovingAway`)** | ✅ **Operativo** | Analisi del trend di velocità di allontanamento o avvicinamento. |
@@ -57,3 +57,8 @@
 2. **Player Audio Nativo In-App Flutter**: Integrazione diretta di `just_audio` o streaming AAudio in-app per evitare l'apertura del browser esterno.
 3. **Supporto Immagini negli Appunti**: Estendere `nexus-plugin-clipboard` per catturare screenshot e immagini PNG/JPEG.
 4. **Resume Automatico File Transfer**: Implementare la ripresa dei trasferimenti file da disco (.part) su riallineamento socket.
+
+## Prossime funzionalità richieste
+
+- [ ] [Input condiviso bidirezionale Windows/Linux secondo la topologia](02-shared-input-and-extended-display.md#1-mouse-e-tastiera-condivisi-secondo-la-topologia).
+- [ ] [Portatile Linux come display esteso di Windows a minima latenza](02-shared-input-and-extended-display.md#2-usare-il-portatile-linux-come-display-esteso-di-windows).

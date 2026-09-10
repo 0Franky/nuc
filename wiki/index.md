@@ -87,3 +87,5 @@ Questa documentazione è divisa in 5 sezioni principali:
 ### [Sezione 5: Roadmap & Piano di Sviluppo](./05-roadmap-and-milestones/)
 1. [01. Roadmap a Fasi & MVP Checklist](./05-roadmap-and-milestones/01-development-phases.md)
    - Da Fase 0 (Proof of Concept) a Release 1.0
+
+2. [02. TODO: input condiviso ed estensione schermo Windows/Linux](./05-roadmap-and-milestones/02-shared-input-and-extended-display.md)

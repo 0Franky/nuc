@@ -391,14 +391,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildPeersSection(List<Map<String, dynamic>> peers) {
+    final connectedCount = peers.where((peer) => peer['online'] == true).length;
     return NexusCard(
       title: 'Dispositivi Connessi & Rilevati',
-      subtitle: '${peers.length} nodi attivi sulla rete locale (LAN P2P)',
+      subtitle: '$connectedCount connessi • ${peers.length} rilevati • Questo dispositivo: ${LanSyncService.instance.deviceName}',
       icon: Icons.hub_rounded,
       iconColor: NexusTheme.accentIndigo,
       trailing: NexusPill(
-        label: '${peers.length} Nodi',
-        style: peers.isNotEmpty ? NexusPillStyle.success : NexusPillStyle.neutral,
+        label: '$connectedCount connessi',
+        style: connectedCount > 0 ? NexusPillStyle.success : NexusPillStyle.neutral,
       ),
       child: peers.isEmpty
           ? Container(
@@ -459,9 +460,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                       ),
                       NexusPill(
-                        label: 'E2EE',
-                        style: NexusPillStyle.success,
-                        icon: Icons.lock_outline_rounded,
+                        label: peer['online'] == true ? 'Connesso' : 'Non connesso',
+                        style: peer['online'] == true ? NexusPillStyle.success : NexusPillStyle.neutral,
                       ),
                     ],
                   ),
