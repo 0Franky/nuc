@@ -74,6 +74,14 @@ set_target_properties(${BINARY_NAME}
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# System GTK/AppIndicator headers can deprecate APIs used by tray_manager.
+# Keep these warnings visible without failing this third-party target's build.
+# Configure the target here: ephemeral plugin links point into the shared Pub cache.
+if(TARGET tray_manager_plugin)
+  target_compile_options(tray_manager_plugin PRIVATE
+    -Wno-error=deprecated-declarations)
+endif()
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build

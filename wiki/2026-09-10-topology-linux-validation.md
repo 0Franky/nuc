@@ -19,6 +19,21 @@
 
 Le sezioni successive conservano cause e passaggi intermedi per ricostruire il lavoro.
 
+## Compatibilità compilazione tray Linux — 10 settembre 2026
+
+- Valutata la proposta di modificare `linux/flutter/ephemeral/.plugin_symlinks/tray_manager/linux/CMakeLists.txt`:
+  quel percorso punta alla cache Pub e non costituisce una correzione versionata.
+- Il progetto applica `-Wall -Werror` anche al plugin. Nel CMake Linux del repository,
+  dopo l'inclusione dei plugin generati, ora solo `tray_manager_plugin` riceve
+  `-Wno-error=deprecated-declarations`: gli avvisi restano visibili, gli altri errori
+  restano bloccanti. Non viene modificata la cache né disabilitato globalmente `-Werror`.
+- Verifica: build Linux release riuscita in Ubuntu 22.04 con tray_manager 0.5.3;
+  comando reale Ninja/Clang controllato, contiene l'opzione sul target del tray.
+- Limite: il testo ricevuto era “Test Clipboard 123”, senza diagnostico C++.
+  Il problema originale sul Linux dell'utente resta da confermare con le righe
+  `error:`; questa modifica copre gli avvisi di deprecazione promossi a errore,
+  non librerie mancanti, simboli rimossi o problemi di avvio del daemon.
+
 ## Richieste e cause verificate
 
 - Tutti i quadrati devono essere spostabili, incluso il dispositivo locale. Il vecchio
