@@ -72,7 +72,52 @@ void main() {
     remote.add(jsonEncode({'type':'SPATIAL_ARRANGEMENT','sender_device_id':'linux-host','peer_id':'this-client','offset_x':120,'offset_y':0}));
     await until(() => lan.customDeviceOffsets['linux-host']?.dx == -120);
     expect(lan.discoveredPeers.length, 2);
-
+    await lan.synchronizeTopology();
+    await until(() => received.any((m) => m['type'] == 'TOPOLOGY_SYNC'));
+    final first = received.lastWhere((m) => m['type'] == 'TOPOLOGY_SYNC');
+    expect(first['topology']['points']['this-client'], [0, 0]);
+    expect(first['topology']['points']['linux-host'], [-120, 0]);
+    final changed = {'type':'TOPOLOGY_SYNC','sender_device_id':'linux-host',
+      'topology': {'schema':1,'revision':2,'author':'linux-host',
+        'points': {'this-client':[100,50],'linux-host':[300,50],'phone':[300,150]}}};
+    remote.add(jsonEncode(changed));
+    await until(() => lan.customDeviceOffsets['linux-host']?.dx == 200);
+    expect(lan.customDeviceOffsets['phone']?.dy, 100);
+    // Replay and old pairwise traffic cannot revert the shared layout.
+    remote.add(jsonEncode(first));
+    remote.add(jsonEncode({'type':'SPATIAL_ARRANGEMENT','sender_device_id':'linux-host',
+      'peer_id':'this-client','offset_x':999,'offset_y':0}));
+    remote.add(jsonEncode({'type':'INPUT_STATUS','device_id':'linux-host','ok':false,'message':'barrier'}));
+    await until(() => lan.inputError == 'barrier');
+    expect(lan.customDeviceOffsets['linux-host']?.dx, 200);
+    await until(() => received.where((m) => m['type'] == 'TOPOLOGY_SYNC').length == 2);
+    final prefs = await SharedPreferences.getInstance();
+    await until(() => prefs.getString('shared_topology_v1')?.contains('300') == true);
+    await remote.close();
+    await until(() => !lan.isConnected);
+    final retryServer = await HttpServer.bind('127.0.0.2', 0);
+    final caughtUp = Completer<Map<String, dynamic>>();
+    WebSocket? retrySocket;
+    final retrySubscription = retryServer.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      retrySocket = socket;
+      socket.listen((data) {
+        final packet = jsonDecode(data as String) as Map<String, dynamic>;
+        if (packet['type'] == 'TOPOLOGY_SYNC' && !caughtUp.isCompleted) caughtUp.complete(packet);
+      });
+      socket.add(jsonEncode({'type':'PEER_ANNOUNCE','is_host':true,'id':'linux-host','name':'Linux'}));
+    });
+    try {
+      await lan.connectToPeer('127.0.0.2', port: retryServer.port);
+      final snapshot = await caughtUp.future.timeout(const Duration(seconds: 3));
+      expect(snapshot['topology']['revision'], 2);
+      expect(snapshot['topology']['points']['phone'], [300,150]);
+    } finally {
+      await retrySocket?.close();
+      await until(() => !lan.isConnected);
+      await retrySubscription.cancel();
+      await retryServer.close(force: true);
+    }
 
   });
 }

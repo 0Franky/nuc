@@ -61,3 +61,32 @@ Verifiche eseguite su Windows: 22 test Flutter selezionati, incluso avvio/arrest
 **Limiti aperti:** Linux fisico non ancora disponibile per verifica (utente sta risolvendo avvio demone); il backend supporta cattura Wayland sui desktop supportati da upstream, mentre X11 è solo ricevente. Cattura X11, prove bidirezionali reali, DPI/multimonitor e misurazioni restano aperti. Lo schermo esteso non è implementato in questa fase.
 
 Build: `scripts/build_windows.ps1` e `scripts/build_linux.sh` includono `input-engine`; il builder Python richiede Git, Cargo e le dipendenze native Linux elencate nell'upstream. Conservare la cartella completa `input-engine` con sorgenti/licenza. Dettagli in [THIRD_PARTY.md](../../THIRD_PARTY.md).
+
+
+### Sincronizzazione della topologia (2026-09-10)
+
+Il pulsante **Sincronizza topologia con gli altri dispositivi** pubblica la disposizione
+corrente e abilita gli aggiornamenti automatici anche sui destinatari. La mappa usa
+UUID e coordinate globali: ciascuna macchina proietta i peer rispetto alla propria
+posizione. Le copie vengono conservate nelle preferenze e scambiate alla riconnessione.
+Le vecchie disposizioni reciproche non sovrascrivono una mappa condivisa attiva.
+
+Il protocollo `TOPOLOGY_SYNC` schema 1 usa revisioni logiche e UUID autore come
+spareggio deterministico: in caso di modifiche simultanee prevale una disposizione
+completa, senza fusione dei trascinamenti concorrenti. I duplicati non sono inoltrati.
+Un dispositivo nuovo deve essere inserito nella disposizione e incluso premendo
+nuovamente il pulsante. Tutti i destinatari devono avere questa versione aggiornata;
+lo stato attivo indica la pubblicazione automatica, non una conferma di ricezione
+universale. La sincronizzazione non concede autorizzazioni a mouse/tastiera.
+
+Per ciascun bordo il motore sceglie il PC online autorizzato più vicino, con spareggio
+per UUID: una fila di tre PC genera passaggi successivi. Il motore mantiene un solo
+vicino per bordo; segmenti multipli sullo stesso bordo non sono ancora supportati.
+Le verifiche fisiche sul laptop Linux restano in attesa della riparazione del demone.
+
+Verifica della sincronizzazione: 13 test Flutter mirati superati (modello a tre
+nodi, conflitti/duplicati, persistenza, WebSocket e riconnessione, selezione del
+vicino, pulsante e canvas adattivo), 5 test Rust media superati, `flutter analyze`
+senza segnalazioni. Revisione indipendente: corretti peer fuori dal canvas e
+selezione di endpoint input non validi; seconda revisione senza ulteriori rilievi.
+Il rilevamento BLE non sovrascrive la disposizione condivisa.

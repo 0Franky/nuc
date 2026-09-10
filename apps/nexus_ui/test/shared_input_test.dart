@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:nexus_ui/widgets/shared_input_panel.dart';
 import 'package:nexus_ui/services/shared_input_service.dart';
+import 'package:nexus_ui/services/lan_sync_service.dart';
 
 void main() {
   final fingerprint = List.filled(32, 'ab').join(':');
@@ -13,6 +14,19 @@ void main() {
     'online': true,
     'shared_input': {'fingerprint': fingerprint, 'port': 4243},
   };
+  test('three PCs choose nearest approved neighbor independent of discovery order', () {
+    final lan = LanSyncService.instance;
+    lan.discoveredPeers = [peer('far', '192.0.2.3'), peer('near', '192.0.2.2')];
+    lan.customDeviceOffsets..clear()..addAll({'far': const Offset(240,0), 'near':const Offset(120,0)});
+    expect(SharedInputService.neighboringPositions(lan, {'far':fingerprint,'near':fingerprint}), {'near':'right'});
+    lan.discoveredPeers.last['shared_input'] = {'fingerprint': fingerprint, 'port': 0};
+    expect(SharedInputService.neighboringPositions(lan, {'far':fingerprint,'near':fingerprint}), {'far':'right'});
+    lan.discoveredPeers.last['shared_input'] = {'fingerprint': fingerprint, 'port': 4243};
+    lan.customDeviceOffsets..clear()..addAll({'far': const Offset(120,0), 'near':const Offset(-120,0)});
+    expect(SharedInputService.neighboringPositions(lan, {'far':fingerprint,'near':fingerprint}), {'near':'left','far':'right'});
+    lan.discoveredPeers = [];
+    lan.customDeviceOffsets.clear();
+  });
   test('discovery alone never authorizes physical input', () {
     final config = SharedInputService.configuration(
       [peer('pc', '192.0.2.1')],

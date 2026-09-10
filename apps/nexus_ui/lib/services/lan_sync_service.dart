@@ -9,6 +9,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'logger_service.dart';
+import 'shared_topology.dart';
 import 'nexus_ffi_bridge.dart';
 import '../models/models.dart';
 
@@ -242,7 +243,19 @@ class LanSyncService extends ChangeNotifier {
   }
 
   Future<void> adoptNativeIdentity(String id) async {
+    final previousId = deviceId;
     deviceId = id;
+    final topology = _sharedTopology;
+    if (topology != null && previousId != id) {
+      if (!topology.points.containsKey(id) && topology.points.containsKey(previousId)) {
+        final points = {...topology.points};
+        points[id] = points.remove(previousId)!;
+        _sharedTopology = SharedTopology(topology.revision + 1, id, points);
+      }
+      _projectTopology();
+      await _saveTopology();
+      _broadcastTopology();
+    }
     discoveredPeers.removeWhere((peer) => peer['id'] == id);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('nexus_device_id', id);
@@ -293,6 +306,49 @@ class LanSyncService extends ChangeNotifier {
     'self': const Offset(-120.0, 0.0),
   };
 
+  SharedTopology? _sharedTopology;
+  bool get topologySyncEnabled => _sharedTopology != null;
+  Future<void> _topologySave = Future<void>.value();
+
+  void _broadcastTopology() {
+    final topology = _sharedTopology;
+    if (topology == null) return;
+    final payload = jsonEncode({'type': 'TOPOLOGY_SYNC',
+      'sender_device_id': deviceId, 'topology': topology.toJson()});
+    for (final socket in _peerSockets.values.toSet()) {
+      if (socket.readyState == WebSocket.open) socket.add(payload);
+    }
+  }
+
+  void _projectTopology() {
+    final relative = _sharedTopology?.relativeTo(deviceId);
+    if (relative == null || !_sharedTopology!.points.containsKey(deviceId)) return;
+    customDeviceOffsets..clear()..addAll(relative);
+    final target = selectedTargetDeviceId;
+    if (target != null && relative.containsKey(target)) {
+      updateDeviceOffset(target, relative[target]!, syncNetwork: false);
+    }
+  }
+
+  Future<void> synchronizeTopology() async {
+    final previous = _sharedTopology;
+    final origin = previous?.points[deviceId] ?? Offset.zero;
+    final points = <String, Offset>{...?previous?.points, deviceId: origin};
+    for (final peer in discoveredPeers) {
+      final id = peer['id'] as String;
+      if (id != deviceId) points[id] = origin + getDeviceOffset(id);
+    }
+    final next = SharedTopology((previous?.revision ?? 0) + 1, deviceId, points);
+    if (SharedTopology.parse(next.toJson()) == null) {
+      throw StateError('Topologia non valida o troppi dispositivi');
+    }
+    _sharedTopology = next;
+    _projectTopology();
+    await _saveTopology();
+    _broadcastTopology();
+    notifyListeners();
+  }
+
   void updateDeviceOffset(String id, Offset offset, {bool syncNetwork = true}) {
     customDeviceOffsets[id] = offset;
     // Derive macro quadrant relative to center
@@ -303,15 +359,31 @@ class LanSyncService extends ChangeNotifier {
     }
     if (syncNetwork) {
       final targetPeer = (id == 'self' || id.isEmpty) ? (selectedTargetDeviceId ?? '') : id;
-      sendSpatialArrangement(targetPeer, spatialPosition, customOffset: offset);
+      if (_sharedTopology != null && targetPeer.isNotEmpty) {
+        final next = _sharedTopology!.move(deviceId, targetPeer, offset);
+        if (SharedTopology.parse(next.toJson()) == null) return;
+        _sharedTopology = next;
+        _projectTopology();
+        _broadcastTopology();
+      } else {
+        sendSpatialArrangement(targetPeer, spatialPosition, customOffset: offset);
+      }
       unawaited(_saveTopology());
       notifyListeners();
     }
   }
 
-  Future<void> _saveTopology() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('shared_input_topology', jsonEncode(customDeviceOffsets.map((id, offset) => MapEntry(id, [offset.dx, offset.dy]))));
+  Future<void> _saveTopology() {
+    final local = jsonEncode(customDeviceOffsets.map((id, offset) => MapEntry(id, [offset.dx, offset.dy])));
+    final shared = _sharedTopology == null ? null : jsonEncode(_sharedTopology!.toJson());
+    _topologySave = _topologySave.catchError((Object e) {
+      NexusLogger.log('TOPOLOGY', 'Persistence failed: $e');
+    }).then((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('shared_input_topology', local);
+      if (shared != null) await prefs.setString('shared_topology_v1', shared);
+    });
+    return _topologySave;
   }
 
   Offset getDeviceOffset(String id) {
@@ -356,6 +428,8 @@ class LanSyncService extends ChangeNotifier {
           customDeviceOffsets[entry.key as String] = Offset((value[0] as num).toDouble(), (value[1] as num).toDouble());
         }
       }
+      _sharedTopology = SharedTopology.parse(jsonDecode(prefs.getString('shared_topology_v1') ?? 'null'));
+      _projectTopology();
       _customDeviceName = prefs.getString('nexus_custom_device_name') ?? "";
 
       walkAwayThresholdMeters = prefs.getDouble('proximity_walk_away_threshold') ?? 2.2;
@@ -1214,7 +1288,25 @@ class LanSyncService extends ChangeNotifier {
               return;
             }
 
+            if (json['type'] == 'TOPOLOGY_SYNC') {
+              final sender = json['sender_device_id'];
+              final knownSender = sender is String && sender != deviceId &&
+                  (_socketPeerIds[ip] == sender || (_peerRoutes[sender]?.contains(ip) ?? false));
+              final incoming = SharedTopology.parse(json['topology']);
+              if (knownSender && incoming != null && incoming.points.containsKey(deviceId) &&
+                  incoming.newerThan(_sharedTopology)) {
+                _sharedTopology = incoming;
+                _projectTopology();
+                unawaited(_saveTopology());
+                _broadcastTopology();
+                notifyListeners();
+                _topologyController.add(json);
+              }
+              return;
+            }
+
             if (json['type'] == 'SPATIAL_ARRANGEMENT') {
+              if (topologySyncEnabled) return;
               final sender = json['sender_device_id'] as String?;
               if (json['peer_id'] == deviceId && sender != null && sender != deviceId &&
                   (_socketPeerIds[ip] == sender || (_peerRoutes[sender]?.contains(ip) ?? false))) {
@@ -1246,6 +1338,7 @@ class LanSyncService extends ChangeNotifier {
                   // The local UI and daemon represent the same physical device.
                   unawaited(adoptNativeIdentity(pId));
                   broadcastDeviceMetadata();
+                  _broadcastTopology();
                 }
               }
               if (pId.isNotEmpty && pId != deviceId) {
@@ -1263,7 +1356,8 @@ class LanSyncService extends ChangeNotifier {
                   updateSharedInput: json.containsKey('shared_input') && json['metadata_source'] != 'discovery',
                 );
                 if (json['metadata_source'] != 'discovery') {
-                  _peerRoutes.putIfAbsent(pId, () => <String>{}).add(ip);
+                  final newRoute = _peerRoutes.putIfAbsent(pId, () => <String>{}).add(ip);
+                  if (newRoute) _broadcastTopology();
                 }
               }
               if (bleSpatialAutoDetect && isBleHardwareAvailable && estimatedDistanceMeters != null) {
@@ -1726,6 +1820,7 @@ class LanSyncService extends ChangeNotifier {
 
   /// Automatically determines peer spatial position using physical sensor fusion (accelerometer/tilt) and BLE distance
   String? autoDetermineSpatialPosition({double? distanceMeters, String? peerType}) {
+    if (topologySyncEnabled) return null;
     if (!bleSpatialAutoDetect || !isBleHardwareAvailable) return null;
     final dist = distanceMeters ?? estimatedDistanceMeters;
     if (dist == null) return null;

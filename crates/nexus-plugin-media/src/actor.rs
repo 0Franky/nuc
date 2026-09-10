@@ -650,6 +650,7 @@ impl NexusActor for MediaPluginActor {
                                             if msg_type == "PEER_METADATA"
                                                 || msg_type == "PEER_ANNOUNCE"
                                                 || msg_type == "SPATIAL_ARRANGEMENT"
+                                                || msg_type == "TOPOLOGY_SYNC"
                                                 || msg_type == "PROXIMITY_UPDATE"
                                             {
                                                 if let Ok(msg_str) =

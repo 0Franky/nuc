@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -23,6 +24,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   bool _wakeOnApproach = LanSyncService.instance.wakeOnApproach;
   bool _bleAutoDetect = LanSyncService.instance.bleSpatialAutoDetect;
   bool _isDragging = false;
+  double _canvasScale = 1;
 
   Timer? _timer;
   StreamSubscription? _topologySub;
@@ -160,6 +162,27 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _buildSpatialCanvas(),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  icon: const Icon(Icons.sync),
+                  label: const Text('Sincronizza topologia con gli altri dispositivi'),
+                  onPressed: () async {
+                    try {
+                      await LanSyncService.instance.synchronizeTopology();
+                      if (mounted) setState(() {});
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Sincronizzazione non riuscita: $e')));
+                      }
+                    }
+                  },
+                ),
+                if (LanSyncService.instance.topologySyncEnabled)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('Sincronizzazione automatica attiva. Le modifiche vengono condivise; i dispositivi già disposti si aggiornano anche alla riconnessione. Richiede la nuova versione su tutte le macchine.'),
+                  ),
                 const SizedBox(height: 14),
 
                 // Real status description card
@@ -618,6 +641,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
     return Container(
       width: double.infinity,
       height: 280,
+      key: const ValueKey('topology-canvas'),
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
         borderRadius: BorderRadius.circular(16),
@@ -627,6 +651,14 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
         builder: (context, constraints) {
           final centerX = constraints.maxWidth / 2;
           final centerY = constraints.maxHeight / 2;
+          if (!_isDragging) {
+            _canvasScale = 1;
+            for (final peer in peers) {
+              final offset = lan.getDeviceOffset(peer['id'] as String);
+              if (offset.dx.abs() > 0) _canvasScale = math.min(_canvasScale, math.max(1, centerX - 58) / offset.dx.abs());
+              if (offset.dy.abs() > 0) _canvasScale = math.min(_canvasScale, math.max(1, centerY - 50) / offset.dy.abs());
+            }
+          }
 
           return GestureDetector(
             behavior: HitTestBehavior.translucent,
@@ -705,8 +737,8 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                     painter: SpatialLinePainter(
                       start: Offset(centerX, centerY),
                       end: Offset(
-                        centerX + lan.getDeviceOffset(peer['id'] as String? ?? '').dx,
-                        centerY + lan.getDeviceOffset(peer['id'] as String? ?? '').dy,
+                        centerX + lan.getDeviceOffset(peer['id'] as String? ?? '').dx * _canvasScale,
+                        centerY + lan.getDeviceOffset(peer['id'] as String? ?? '').dy * _canvasScale,
                       ),
                       color: NexusDeviceColors.colorForDeviceName(peer['name'] as String? ?? 'Peer').withAlpha(120),
                     ),
@@ -793,9 +825,10 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
     final isSelected = lan.selectedTargetDeviceId == peerId || lan.discoveredPeers.length == 1;
 
     return Positioned(
-      left: (centerX + peerOffset.dx) - 52,
-      top: (centerY + peerOffset.dy) - 46,
+      left: (centerX + peerOffset.dx * _canvasScale) - 52,
+      top: (centerY + peerOffset.dy * _canvasScale) - 46,
       child: GestureDetector(
+        key: ValueKey('topology-peer-$peerId'),
         behavior: HitTestBehavior.opaque,
         onPanStart: (details) {
           _isDragging = true;
@@ -803,8 +836,8 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
         onPanUpdate: (details) {
           // Responsive 1.4x drag multiplier: moving finger effortlessly traverses canvas in 1 motion
           const dragMultiplier = 1.4;
-          final newX = (peerOffset.dx + details.delta.dx * dragMultiplier).clamp(-centerX + 55, centerX - 55);
-          final newY = (peerOffset.dy + details.delta.dy * dragMultiplier).clamp(-centerY + 45, centerY - 45);
+          final newX = (peerOffset.dx * _canvasScale + details.delta.dx * dragMultiplier).clamp(-centerX + 58, centerX - 58) / _canvasScale;
+          final newY = (peerOffset.dy * _canvasScale + details.delta.dy * dragMultiplier).clamp(-centerY + 50, centerY - 50) / _canvasScale;
           final updated = Offset(newX, newY);
           lan.updateDeviceOffset(peerId, updated, syncNetwork: false);
           setState(() {

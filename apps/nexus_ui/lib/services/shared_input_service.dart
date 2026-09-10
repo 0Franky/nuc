@@ -163,16 +163,55 @@ class SharedInputService extends ChangeNotifier {
     return '${lines.join('\n')}\n';
   }
 
+  static bool _validEndpoint(Map<String, dynamic> peer) {
+    final ip = InternetAddress.tryParse(peer['ip'] as String? ?? '');
+    final metadata = peer['shared_input'];
+    final remotePort = metadata is Map ? metadata['port'] : null;
+    return ip != null &&
+        !ip.isLoopback &&
+        remotePort is int &&
+        remotePort > 0 &&
+        remotePort < 65536;
+  }
+
+  /// A row of three PCs has two successive hops, not two targets on one edge.
+  static Map<String, String> neighboringPositions(
+    LanSyncService lan,
+    Map<String, String> approved,
+  ) {
+    final candidates = lan.discoveredPeers
+        .where(
+          (p) =>
+              p['online'] == true &&
+              _validEndpoint(p) &&
+              LanSyncService.isDesktopPeer(p) &&
+              approved[p['id']] != null &&
+              (p['shared_input'] as Map?)?['fingerprint'] ==
+                  approved[p['id']] &&
+              lan.customDeviceOffsets[p['id']] != null,
+        )
+        .toList();
+    candidates.sort((a, b) {
+      final d = lan.customDeviceOffsets[a['id']]!.distanceSquared.compareTo(
+        lan.customDeviceOffsets[b['id']]!.distanceSquared,
+      );
+      return d != 0 ? d : (a['id'] as String).compareTo(b['id'] as String);
+    });
+    final edges = <String>{};
+    final positions = <String, String>{};
+    for (final peer in candidates) {
+      final id = peer['id'] as String;
+      final offset = lan.customDeviceOffsets[id]!;
+      if (offset.distance <= 1) continue;
+      final edge = position(offset.dx, offset.dy);
+      if (edges.add(edge)) positions[id] = edge;
+    }
+    return positions;
+  }
+
   Future<void> _writeConfig() async {
     final lan = _lan!;
-    final positions = <String, String>{};
-    for (final peer in lan.discoveredPeers) {
-      final id = peer['id'] as String;
-      final offset = lan.customDeviceOffsets[id];
-      if (offset != null && offset.distance > 1) {
-        positions[id] = position(offset.dx, offset.dy);
-      }
-    }
+    final positions = neighboringPositions(lan, trusted);
     final config = configuration(lan.discoveredPeers, trusted, positions);
     if (config == _lastConfig) return;
     // The upstream watcher ignores malformed intermediate writes and reads the
