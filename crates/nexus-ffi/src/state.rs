@@ -132,13 +132,15 @@ pub fn check_system_bluetooth_enabled() -> bool {
 }
 
 /// Initializes the Nexus Engine asynchronously from Rust
-pub async fn init_nexus_engine(device_name: String) -> DeviceId {
-    let identity = DeviceIdentity::generate();
+pub async fn init_nexus_engine(device_name: String) -> nexus_types::NexusResult<DeviceId> {
+    let mut engine_guard = GLOBAL_ENGINE.write().await;
+    if let Some(engine) = engine_guard.as_ref() { return Ok(engine.device_id); }
+    let identity = DeviceIdentity::load_or_create().map_err(|e| nexus_types::NexusError::Crypto(format!("Identity storage: {e}")))?;
     let device_id = identity.device_id;
 
     let (bus, mut cmd_rx) = EventBus::new(256, 128);
 
-    let media_actor = Arc::new(MediaPluginActor::new(device_id));
+    let media_actor = Arc::new(MediaPluginActor::new(device_id).with_device_name(device_name.clone()));
     ActorSupervisor::spawn_actor((*media_actor).clone_handle(), bus.clone());
 
     let audio_actor = Arc::new(AudioPluginActor::new(device_id));
@@ -182,9 +184,9 @@ pub async fn init_nexus_engine(device_name: String) -> DeviceId {
         transport,
     };
 
-    let mut global = GLOBAL_ENGINE.write().await;
-    *global = Some(handle);
+
+    *engine_guard = Some(handle);
     IS_INITIALIZED.store(true, Ordering::SeqCst);
 
-    device_id
+    Ok(device_id)
 }

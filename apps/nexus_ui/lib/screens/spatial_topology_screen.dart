@@ -5,7 +5,6 @@ import '../services/lan_sync_service.dart';
 import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
 import '../widgets/nexus_pill.dart';
-import '../widgets/nexus_button.dart';
 import '../widgets/spatial_grid_painter.dart';
 import '../widgets/target_device_selector.dart';
 
@@ -24,7 +23,6 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   bool _wakeOnApproach = LanSyncService.instance.wakeOnApproach;
   bool _bleAutoDetect = LanSyncService.instance.bleSpatialAutoDetect;
   bool _isDragging = false;
-  String? _activeDraggedPeerId;
 
   Timer? _timer;
   StreamSubscription? _topologySub;
@@ -812,7 +810,6 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
         behavior: HitTestBehavior.opaque,
         onPanStart: (details) {
           _isDragging = true;
-          _activeDraggedPeerId = peerId;
         },
         onPanUpdate: (details) {
           // Responsive 1.4x drag multiplier: moving finger effortlessly traverses canvas in 1 motion
@@ -827,7 +824,6 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
         },
         onPanEnd: (details) {
           _isDragging = false;
-          _activeDraggedPeerId = null;
           final finalOffset = lan.getDeviceOffset(peerId);
           lan.updateDeviceOffset(peerId, finalOffset, syncNetwork: true);
           setState(() {
@@ -836,7 +832,6 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
         },
         onPanCancel: () {
           _isDragging = false;
-          _activeDraggedPeerId = null;
         },
         child: Container(
           width: 104,

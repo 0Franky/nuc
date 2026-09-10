@@ -19,7 +19,7 @@ mod tests {
     #[tokio::test]
     async fn test_ffi_engine_init() {
         let _guard = TEST_MUTEX.lock().unwrap();
-        let device_id = init_nexus_engine("Nexus Phone Test".into()).await;
+        let device_id = init_nexus_engine("Nexus Phone Test".into()).await.unwrap();
         assert_ne!(device_id.to_string(), "");
         assert!(IS_INITIALIZED.load(Ordering::SeqCst));
     }

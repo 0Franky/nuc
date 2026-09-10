@@ -8,7 +8,6 @@ import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
 import '../widgets/nexus_card.dart';
 import '../widgets/nexus_pill.dart';
-import '../widgets/nexus_button.dart';
 import '../widgets/target_device_selector.dart';
 
 class FileTransferScreen extends StatefulWidget {

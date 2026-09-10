@@ -1,31 +1,16 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+DIST_DIR="$ROOT_DIR/dist/linux"
 
-echo "====================================================="
-echo "   Nexus Universal Continuity - Linux Build Script   "
-echo "====================================================="
-
-# 1. Compile Rust Workspace in Release Mode
-echo -e "\n[1/3] Compiling Rust Workspace in Release Mode..."
-cargo build --workspace --release
-
-# 2. Setup Distribution Directory
-DIST_DIR="$(dirname "$0")/../dist/linux"
-rm -rf "$DIST_DIR"
-mkdir -p "$DIST_DIR"
-
-cp "$(dirname "$0")/../target/release/nexus-daemon" "$DIST_DIR/"
-cp "$(dirname "$0")/../target/release/libnexus_ffi.so" "$DIST_DIR/"
-
-# 3. Compile Flutter Linux Application
-echo -e "\n[2/3] Building Flutter Linux App..."
-cd "$(dirname "$0")/../apps/nexus_ui"
-flutter build linux --release
-
-if [ -d "build/linux/x64/release/bundle" ]; then
-    cp -r build/linux/x64/release/bundle/* "$DIST_DIR/"
-    cp "$(dirname "$0")/../../target/release/libnexus_ffi.so" "$DIST_DIR/lib/"
-fi
-
-echo -e "\n[3/3] Build Completed Successfully!"
-echo "Distribution directory: $DIST_DIR"
+cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --release
+(cd "$ROOT_DIR/apps/nexus_ui" && flutter build linux --release)
+BUNDLE_DIR="$ROOT_DIR/apps/nexus_ui/build/linux/x64/release/bundle"
+test -f "$BUNDLE_DIR/nexus_ui"
+test -f "$ROOT_DIR/target/release/libnexus_ffi.so"
+mkdir -p "$DIST_DIR/lib"
+cp -a "$BUNDLE_DIR/." "$DIST_DIR/"
+cp "$ROOT_DIR/target/release/nexus-daemon" "$DIST_DIR/"
+cp "$ROOT_DIR/target/release/libnexus_ffi.so" "$DIST_DIR/lib/"
+echo "Linux build available in $DIST_DIR"
+echo "Before remote input, run: $ROOT_DIR/scripts/check_linux_input.sh"

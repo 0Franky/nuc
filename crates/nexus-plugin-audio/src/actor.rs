@@ -125,8 +125,6 @@ impl NexusActor for AudioPluginActor {
     async fn run(&mut self, bus: EventBus) -> NexusResult<()> {
         let mut event_sub = bus.subscribe();
         let is_streaming_clone = self.is_streaming.clone();
-        let master_volume_clone = self.master_volume.clone();
-        let is_muted_clone = self.is_muted.clone();
         let http_clients_clone = self.http_clients.clone();
         let ws_clients_clone = self.ws_clients.clone();
 
@@ -134,8 +132,8 @@ impl NexusActor for AudioPluginActor {
         #[cfg(target_os = "windows")]
         {
             let is_streaming = is_streaming_clone.clone();
-            let master_volume = master_volume_clone.clone();
-            let is_muted = is_muted_clone.clone();
+            let master_volume = self.master_volume.clone();
+            let is_muted = self.is_muted.clone();
             let http_clients = http_clients_clone.clone();
             let ws_clients = ws_clients_clone.clone();
 
@@ -243,27 +241,59 @@ impl NexusActor for AudioPluginActor {
             });
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
         {
-            let is_streaming_mock = is_streaming_clone.clone();
-            let http_clients_mock = http_clients_clone.clone();
-            let ws_clients_mock = ws_clients_clone.clone();
+            let is_streaming = is_streaming_clone.clone();
+            let http_clients = http_clients_clone.clone();
+            let ws_clients = ws_clients_clone.clone();
 
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(10));
-                while is_streaming_mock.load(Ordering::Relaxed) {
-                    interval.tick().await;
-                    let pcm_bytes = vec![0u8; SAMPLES_PER_10MS * 4];
-                    {
-                        let mut http = http_clients_mock.write().await;
-                        http.retain(|client_tx| client_tx.send(pcm_bytes.clone()).is_ok());
-                    }
-                    {
-                        let mut ws = ws_clients_mock.write().await;
-                        ws.retain(|client_tx| client_tx.send(pcm_bytes.clone()).is_ok());
+            std::thread::spawn(move || {
+                use std::io::Read;
+                use std::process::{Command, Stdio};
+
+                while is_streaming.load(Ordering::Relaxed) {
+                    let child = Command::new("pw-record")
+                        .args(["--format", "s16", "--rate", "48000", "--channels", "2", "-"])
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .or_else(|_| {
+                            Command::new("parec")
+                                .args(["--format=s16le", "--rate=48000", "--channels=2", "-d", "@DEFAULT_MONITOR@"])
+                                .stdout(Stdio::piped())
+                                .stderr(Stdio::null())
+                                .spawn()
+                        });
+
+                    if let Ok(mut proc) = child {
+                        if let Some(mut stdout) = proc.stdout.take() {
+                            let mut buf = vec![0u8; SAMPLES_PER_10MS * 4];
+                            while is_streaming.load(Ordering::Relaxed) {
+                                match stdout.read_exact(&mut buf) {
+                                    Ok(_) => {
+                                        let pcm_bytes = buf.clone();
+                                        futures::executor::block_on(async {
+                                            let mut http = http_clients.write().await;
+                                            http.retain(|client_tx| client_tx.send(pcm_bytes.clone()).is_ok());
+                                            let mut ws = ws_clients.write().await;
+                                            ws.retain(|client_tx| client_tx.send(pcm_bytes.clone()).is_ok());
+                                        });
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                        let _ = proc.kill();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                     }
                 }
             });
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
+        {
+            // Other platforms without active audio capture loopback backend
         }
 
         // 2. Spawn Mobile Web Audio Relay Server on 0.0.0.0:28472
@@ -371,6 +401,7 @@ impl NexusActor for AudioPluginActor {
 
                         // B.1. Endpoint: GET /api/volume?v=...
                         if req.starts_with("GET /api/volume") {
+                            #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
                             let mut current_vol = *master_vol.read().await;
                             if let Some(idx) = req.find("?v=") {
                                 let val_str = &req[idx + 3..];

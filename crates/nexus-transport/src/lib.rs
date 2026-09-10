@@ -95,6 +95,8 @@ impl TransportEngine {
         properties.insert("name".to_string(), self.local_peer_info.name.clone());
         properties.insert("pub".to_string(), self.identity.fingerprint());
         properties.insert("ver".to_string(), "1".to_string());
+        properties.insert("os".to_string(), format!("{:?}", self.local_peer_info.os));
+        properties.insert("device_type".to_string(), format!("{:?}", self.local_peer_info.device_type));
 
         let service_info = ServiceInfo::new(
             SERVICE_TYPE,
@@ -143,13 +145,29 @@ impl TransportEngine {
                                     .unwrap_or("")
                                     .to_string();
 
-                                info!("Discovered peer '{}' (ID: {}) via mDNS", peer_name, peer_id);
+                                let peer_os = match props.get("os").map(|s| s.val_str()).unwrap_or("Unknown") {
+                                    "Windows" => OsType::Windows,
+                                    "MacOS" => OsType::MacOS,
+                                    "Linux" => OsType::Linux,
+                                    "Android" => OsType::Android,
+                                    "IOS" => OsType::IOS,
+                                    _ => OsType::Unknown,
+                                };
+
+                                let peer_type = match props.get("device_type").map(|s| s.val_str()).unwrap_or("Desktop") {
+                                    "Mobile" => DeviceType::Mobile,
+                                    "Tablet" => DeviceType::Tablet,
+                                    "Laptop" => DeviceType::Laptop,
+                                    _ => DeviceType::Desktop,
+                                };
+
+                                info!("Discovered peer '{}' (ID: {}, OS: {:?}) via mDNS", peer_name, peer_id, peer_os);
 
                                 let discovered_info = PeerInfo {
                                     id: peer_id,
                                     name: peer_name,
-                                    device_type: DeviceType::Desktop,
-                                    os: OsType::Unknown,
+                                    device_type: peer_type,
+                                    os: peer_os,
                                     capabilities: CapabilityMap::new().with_capability(Capability::MediaHandoff),
                                     protocol_version: 1,
                                     public_key_fingerprint: fingerprint,
@@ -157,9 +175,16 @@ impl TransportEngine {
                                     spatial_arrangement: nexus_types::SpatialArrangement::None,
                                 };
 
+                                let peer_ip = info
+                                    .get_addresses_v4()
+                                    .iter()
+                                    .next()
+                                    .map(|ip| std::net::IpAddr::V4(**ip))
+                                    .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+
                                 let session = PeerSession {
                                     peer_info: discovered_info.clone(),
-                                    endpoint: SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), info.get_port()),
+                                    endpoint: SocketAddr::new(peer_ip, info.get_port()),
                                     encrypted_channel: None,
                                     last_seen_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
                                 };
@@ -203,6 +228,57 @@ impl TransportEngine {
                     if let Ok(packet) = NexusPacket::decode(packet_data) {
                         debug!("Received packet from {}: {:?}", src_addr, packet.payload);
                         self.handle_incoming_packet(packet, src_addr).await;
+                    } else if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(packet_data) {
+                        if json_val["type"] == "PEER_ANNOUNCE" {
+                            let p_id_str = json_val["id"].as_str().or_else(|| json_val["device_id"].as_str()).unwrap_or("");
+                            let p_name = json_val["name"].as_str().unwrap_or("Dispositivo Remoto").to_string();
+                            let p_type_str = json_val["device_type"].as_str().unwrap_or("Desktop");
+                            let p_os_str = json_val["os"].as_str().unwrap_or("Unknown");
+
+                            if let Ok(u) = uuid::Uuid::parse_str(p_id_str) {
+                                let peer_id = DeviceId::from_bytes(*u.as_bytes());
+                                if peer_id != self.identity.device_id {
+                                    let device_type = match p_type_str.to_lowercase().as_str() {
+                                        "mobile" | "phone" | "smartphone" => nexus_types::DeviceType::Mobile,
+                                        "tablet" => nexus_types::DeviceType::Tablet,
+                                        "laptop" => nexus_types::DeviceType::Laptop,
+                                        _ => nexus_types::DeviceType::Desktop,
+                                    };
+                                    let os = match p_os_str.to_lowercase().as_str() {
+                                        "windows" => nexus_types::OsType::Windows,
+                                        "macos" | "darwin" => nexus_types::OsType::MacOS,
+                                        "linux" => nexus_types::OsType::Linux,
+                                        "android" => nexus_types::OsType::Android,
+                                        "ios" => nexus_types::OsType::IOS,
+                                        _ => nexus_types::OsType::Unknown,
+                                    };
+
+                                    let peer_info = nexus_types::PeerInfo {
+                                        id: peer_id,
+                                        name: p_name,
+                                        device_type,
+                                        os,
+                                        capabilities: nexus_types::CapabilityMap::new().with_capability(nexus_types::Capability::MediaHandoff),
+                                        protocol_version: 1,
+                                        public_key_fingerprint: String::new(),
+                                        screen_geometry: None,
+                                        spatial_arrangement: nexus_types::SpatialArrangement::None,
+                                    };
+
+                                    let mut peers = self.active_peers.write().await;
+                                    peers.insert(
+                                        peer_id,
+                                        PeerSession {
+                                            peer_info: peer_info.clone(),
+                                            endpoint: src_addr,
+                                            encrypted_channel: None,
+                                            last_seen_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+                                        },
+                                    );
+                                    self.bus.publish(NexusEvent::PeerDiscovered(peer_info));
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {

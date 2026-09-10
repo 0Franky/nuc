@@ -128,3 +128,7 @@ Tutta la documentazione tecnica, le analisi di stack, i protocolli e le specific
 
 ### 5. Roadmap & Piano di Sviluppo
 - [01. Roadmap a Fasi & MVP Checklist](./wiki/05-roadmap-and-milestones/01-development-phases.md)
+
+## Consolidamento input e dispositivi
+
+Vedi [correzioni, verifiche e requisiti Linux](wiki/2026-09-10-device-input-consolidation.md).

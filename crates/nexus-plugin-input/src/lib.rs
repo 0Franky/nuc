@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "linux", test))]
+mod linux;
 pub mod actor;
 pub mod ballistics;
 pub mod injector;
@@ -11,6 +13,7 @@ pub use universal_control::{SpatialEdgeHop, UniversalControlEngine};
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "windows")]
     use nexus_protocol::MouseButton;
     use nexus_types::{DeviceId, ScreenGeometry, SpatialArrangement};
 
@@ -136,6 +139,8 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
+    #[ignore = "Injects real input into the desktop; run only in an isolated session"]
     fn test_keyboard_injection_and_combos() {
         // Test key conversion
         assert_eq!(NativeInputInjector::key_to_vk("ENTER"), 0x0D);

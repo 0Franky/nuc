@@ -20,3 +20,5 @@ quinn = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
 uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

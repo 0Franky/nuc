@@ -14,7 +14,10 @@ use crate::state::{
 pub extern "C" fn nexus_init(device_name: *const c_char) -> *mut c_char {
     let name = unsafe { c_to_string(device_name) }.unwrap_or_else(|| "Nexus Flutter Node".into());
     let device_id = GLOBAL_RUNTIME.block_on(init_nexus_engine(name));
-    string_to_c(device_id.to_string())
+    match device_id {
+        Ok(id) => string_to_c(id.to_string()),
+        Err(err) => { tracing::error!("Nexus initialization failed: {err}"); std::ptr::null_mut() }
+    }
 }
 
 /// Frees a C-string allocated by Rust
@@ -332,8 +335,19 @@ pub extern "C" fn nexus_offer_file_transfer(
     GLOBAL_RUNTIME.block_on(async {
         let global = GLOBAL_ENGINE.read().await;
         if let Some(engine) = &*global {
-            let dummy_data = vec![0u8; file_bytes_len as usize];
-            let (meta, chunks) = engine.files_actor.create_offer(name, &dummy_data, target_peer).await;
+            let path = std::path::Path::new(&name);
+            let file_data = if path.exists() && path.is_file() {
+                std::fs::read(path).unwrap_or_default()
+            } else {
+                vec![0u8; file_bytes_len as usize]
+            };
+            let actual_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&name)
+                .to_string();
+
+            let (meta, chunks) = engine.files_actor.create_offer(actual_name, &file_data, target_peer).await;
 
             let res = json!({
                 "file_id": meta.file_id.to_string(),

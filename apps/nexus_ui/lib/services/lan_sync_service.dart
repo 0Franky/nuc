@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
@@ -21,6 +20,9 @@ class LanSyncService extends ChangeNotifier {
   WebSocket? _ws;
   final Map<String, WebSocket> _peerSockets = {};
   final Set<String> _localIps = {};
+  final Set<String> _connectingIps = {};
+  final Map<String, String> _socketPeerIds = {};
+  final Map<String, Set<String>> _peerRoutes = {};
   Timer? _discoveryTimer;
   Timer? _keepAliveTimer;
   bool _isSearching = false;
@@ -31,17 +33,53 @@ class LanSyncService extends ChangeNotifier {
     return '${rawHex.substring(0,8)}-${rawHex.substring(8,12)}-4${rawHex.substring(13,16)}-a${rawHex.substring(17,20)}-${rawHex.substring(20,32)}';
   }
 
-  String _deviceId = _generateInitUuid();
-  String get deviceId => _deviceId;
-  set deviceId(String id) => _deviceId = id;
+  String deviceId = _generateInitUuid();
   String _customDeviceName = "";
   String? selectedTargetDeviceId;
 
   String? pcIp;
-  String pcName = "PC Windows (Nexus Core)";
+  String get pcName => targetDeviceDisplayName;
   Map<String, dynamic>? activeMedia;
   List<Map<String, dynamic>> discoveredPeers = [];
   bool isConnected = false;
+  final Map<String, String> _inputErrors = {};
+  String? get inputError => _inputErrors[selectedTargetDeviceId ?? deviceId];
+  String? inputErrorFor(String id) => _inputErrors[id];
+
+  static bool isDesktopPeer(Map<String, dynamic> peer) {
+    final type = (peer['device_type'] as String? ?? '').toLowerCase();
+    final os = (peer['os'] as String? ?? '').toLowerCase();
+    return type == 'desktop' || type == 'laptop' || ['windows', 'linux', 'macos'].contains(os);
+  }
+
+  String get touchpadTargetId {
+    final selected = selectedTargetPeer;
+    if (selected == null && selectedTargetDeviceId != null) return selectedTargetDeviceId!;
+    if (selected != null && isDesktopPeer(selected)) return selected['id'] as String;
+    for (final peer in discoveredPeers) {
+      if (isDesktopPeer(peer) && peer['online'] != false) return peer['id'] as String;
+    }
+    return 'unavailable-desktop';
+  }
+
+
+  void _setInputError(String id, String? error) {
+    if (_inputErrors[id] == error) return;
+    if (error == null) { _inputErrors.remove(id); } else { _inputErrors[id] = error; }
+    notifyListeners();
+  }
+
+  void _sendInput(Map<String, dynamic> message, String? targetId) {
+    final id = targetId == null || targetId.isEmpty ? selectedTargetDeviceId ?? deviceId : targetId;
+    final socket = socketForDevice(targetId);
+    if (socket == null || !_socketPeerIds.containsValue(id)) {
+      _setInputError(id, 'Connessione diretta al PC non disponibile. Attendi la connessione o seleziona un altro PC.');
+      return;
+    }
+    try { socket.add(_encodeForDevice(message, targetId)); }
+    catch (_) { _setInputError(id, 'Invio input non riuscito: connessione interrotta.'); }
+  }
+
 
   String get defaultDeviceSuffix {
     final clean = deviceId.replaceAll('-', '');
@@ -93,16 +131,26 @@ class LanSyncService extends ChangeNotifier {
     String? deviceType,
     String? os,
     String? spatialPosition,
+    int namePriority = 1,
   }) {
     if (id.isEmpty || id == deviceId) return;
     if (ip != null && _localIps.contains(ip)) return;
     _knownPeerIds.add(id);
 
-    final existingIndex = discoveredPeers.indexWhere((p) => p['id'] == id || (ip != null && ip.isNotEmpty && p['ip'] == ip));
+    // An IP is a route, not an identity: a router can announce several peers.
+    var existingIndex = discoveredPeers.indexWhere((p) => p['id'] == id);
+    if (existingIndex < 0 && ip != null && ip.isNotEmpty) {
+      existingIndex = discoveredPeers.indexWhere((p) =>
+          p['id'] == 'peer-nexus-$ip' && p['ip'] == ip);
+    }
     if (existingIndex >= 0) {
       final existing = discoveredPeers[existingIndex];
+      if (selectedTargetDeviceId == existing['id']) selectedTargetDeviceId = id;
       existing['id'] = id;
-      existing['name'] = name;
+      if (name.trim().isNotEmpty && namePriority >= (existing['name_priority'] as int? ?? 0)) {
+        existing['name'] = name.trim();
+        existing['name_priority'] = namePriority;
+      }
       if (ip != null && ip.isNotEmpty) existing['ip'] = ip;
       if (deviceType != null && deviceType.isNotEmpty) existing['device_type'] = deviceType;
       if (os != null && os.isNotEmpty) existing['os'] = os;
@@ -117,13 +165,19 @@ class LanSyncService extends ChangeNotifier {
           : "Desktop";
       discoveredPeers.add({
         "id": id,
-        "name": name,
+        "name": name.trim().isEmpty ? "Dispositivo ${id.substring(0, math.min(4, id.length))}" : name.trim(),
         "ip": ip,
         "online": true,
+        "name_priority": namePriority,
         "device_type": deviceType ?? fallbackType,
         "os": os ?? "Unknown",
         "spatial_position": spatialPosition ?? "Center",
       });
+    }
+    if (ip != null && id != 'peer-nexus-$ip') {
+      final provisionalId = 'peer-nexus-$ip';
+      if (selectedTargetDeviceId == provisionalId) selectedTargetDeviceId = id;
+      discoveredPeers.removeWhere((peer) => peer['id'] == provisionalId);
     }
     if (selectedTargetDeviceId == null && discoveredPeers.isNotEmpty) {
       selectedTargetDeviceId = discoveredPeers.first['id'] as String?;
@@ -134,10 +188,10 @@ class LanSyncService extends ChangeNotifier {
   Map<String, dynamic>? get selectedTargetPeer {
     if (discoveredPeers.isEmpty) return null;
     if (selectedTargetDeviceId != null) {
-      return discoveredPeers.firstWhere(
-        (p) => p['id'] == selectedTargetDeviceId || p['ip'] == selectedTargetDeviceId,
-        orElse: () => discoveredPeers.first,
-      );
+      for (final peer in discoveredPeers) {
+        if (peer['id'] == selectedTargetDeviceId) return peer;
+      }
+      return null;
     }
     return discoveredPeers.firstWhere(
       (p) => p['device_type'] == 'Desktop' || (p['os'] as String?)?.toLowerCase() == 'windows',
@@ -155,28 +209,34 @@ class LanSyncService extends ChangeNotifier {
   }
 
   WebSocket? get targetSocket {
-    final target = selectedTargetPeer;
-    if (target != null) {
-      final id = target['id'] as String?;
-      final ip = target['ip'] as String?;
-      if (id != null && _peerSockets.containsKey(id)) return _peerSockets[id];
-      if (ip != null && _peerSockets.containsKey(ip)) return _peerSockets[ip];
-    }
-    if (_ws != null) return _ws;
-    if (_peerSockets.isNotEmpty) return _peerSockets.values.first;
-    return null;
+    final id = selectedTargetPeer?['id'] as String?;
+    if (id != null) return socketForDevice(id);
+    // Local engine commands are valid only when no remote target was selected.
+    return selectedTargetDeviceId == null ? _peerSockets['127.0.0.1'] : null;
   }
 
   WebSocket? socketForDevice(String? targetId) {
     if (targetId == null || targetId.isEmpty) return targetSocket;
-    if (_peerSockets.containsKey(targetId)) return _peerSockets[targetId];
-    final peer = discoveredPeers.firstWhere(
-      (p) => p['id'] == targetId || p['ip'] == targetId,
-      orElse: () => <String, dynamic>{},
-    );
-    final ip = peer['ip'] as String?;
-    if (ip != null && _peerSockets.containsKey(ip)) return _peerSockets[ip];
-    return targetSocket;
+    for (final entry in _socketPeerIds.entries) {
+      if (entry.value == targetId) return _peerSockets[entry.key];
+    }
+    for (final route in _peerRoutes[targetId] ?? <String>{}) {
+      final socket = _peerSockets[route];
+      if (socket != null) return socket;
+    }
+    return null;
+  }
+
+  String _encodeForDevice(Map<String, dynamic> message, String? targetId) {
+    final id = targetId == null || targetId.isEmpty ? selectedTargetDeviceId : targetId;
+    return jsonEncode({...message, 'target_device_id': ?id});
+  }
+
+  Future<void> adoptNativeIdentity(String id) async {
+    deviceId = id;
+    discoveredPeers.removeWhere((peer) => peer['id'] == id);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('nexus_device_id', id);
   }
 
   void broadcastDeviceMetadata() {
@@ -264,12 +324,12 @@ class LanSyncService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       final savedId = prefs.getString('nexus_device_id');
       if (savedId != null && savedId.isNotEmpty) {
-        _deviceId = savedId;
+        deviceId = savedId;
       } else {
         final r = math.Random();
         final rawHex = List.generate(32, (_) => r.nextInt(16).toRadixString(16)).join();
-        _deviceId = '${rawHex.substring(0,8)}-${rawHex.substring(8,12)}-4${rawHex.substring(13,16)}-a${rawHex.substring(17,20)}-${rawHex.substring(20,32)}';
-        await prefs.setString('nexus_device_id', _deviceId);
+        deviceId = '${rawHex.substring(0,8)}-${rawHex.substring(8,12)}-4${rawHex.substring(13,16)}-a${rawHex.substring(17,20)}-${rawHex.substring(20,32)}';
+        await prefs.setString('nexus_device_id', deviceId);
       }
       _customDeviceName = prefs.getString('nexus_custom_device_name') ?? "";
 
@@ -395,15 +455,71 @@ class LanSyncService extends ChangeNotifier {
   double _integratedLateralImpulse = 0.0;
   DateTime? _lastLateralMoveTime;
 
+  RawDatagramSocket? _udpListenerSocket;
+
   LanSyncService._();
 
-  void start() {
-    loadSettings();
+  bool _started = false;
+
+  Future<void> start() async {
+    if (_started) return;
+    _started = true;
+    await loadSettings();
     _setupNativeBleChannel();
+    _startUdpBeaconListener();
     _startPeriodicDiscovery();
     _startClipboardWatcher();
     _startBluetoothHardwareWatcher();
     _startSensorsListener();
+  }
+
+  void _startUdpBeaconListener() async {
+    try {
+      _udpListenerSocket?.close();
+      _udpListenerSocket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        42420,
+        reuseAddress: true,
+        reusePort: !Platform.isWindows,
+      );
+      _udpListenerSocket!.broadcastEnabled = true;
+      _udpListenerSocket!.listen((RawSocketEvent event) {
+        if (event == RawSocketEvent.read) {
+          final dg = _udpListenerSocket?.receive();
+          if (dg != null) {
+            try {
+              final text = utf8.decode(dg.data);
+              final json = jsonDecode(text) as Map<String, dynamic>;
+              if (json['type'] == 'PEER_ANNOUNCE') {
+                final pId = json['id'] as String? ?? json['device_id'] as String? ?? '';
+                final pName = json['name'] as String? ?? 'Dispositivo Remoto';
+                final pType = json['device_type'] as String?;
+                final pOs = json['os'] as String?;
+                final pPos = json['spatial_position'] as String?;
+                final senderIp = dg.address.address;
+
+                if (pId.isNotEmpty && pId != deviceId && !_localIps.contains(senderIp)) {
+                  registerOrUpdatePeer(
+                    id: pId,
+                    name: pName,
+                    ip: senderIp,
+                    deviceType: pType,
+                    os: pOs,
+                    spatialPosition: pPos,
+                  );
+                  if (!_peerSockets.containsKey(senderIp)) {
+                    connectToPeer(senderIp);
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+        }
+      });
+      NexusLogger.log("LAN_SYNC", "UDP Beacon listener active on port 42420");
+    } catch (e) {
+      NexusLogger.log("LAN_SYNC", "UDP Beacon listener bind warning (non-fatal): $e");
+    }
   }
 
   void _startSensorsListener() {
@@ -582,15 +698,15 @@ class LanSyncService extends ChangeNotifier {
   void _startPeriodicDiscovery() {
     _discoverAndConnect();
     _discoveryTimer?.cancel();
-    _discoveryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (!isConnected && !_isSearching) {
+    _discoveryTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (!_isSearching) {
         _discoverAndConnect();
       }
     });
   }
 
   Future<void> _discoverAndConnect() async {
-    if (isConnected || _isSearching) return;
+    if (_isSearching) return;
     _isSearching = true;
 
     try {
@@ -629,13 +745,7 @@ class LanSyncService extends ChangeNotifier {
       // 0. Immediate direct connect to known PC IP or localhost (if not self)
       try {
         if (!Platform.isAndroid && !Platform.isIOS) {
-          await _connectToPc('127.0.0.1');
-        }
-        if (!_localIps.contains('192.168.1.11')) {
-          await _connectToPc('192.168.1.11');
-        }
-        if (!_localIps.contains('192.168.1.10')) {
-          await _connectToPc('192.168.1.10');
+          await connectToPeer('127.0.0.1');
         }
       } catch (_) {}
 
@@ -700,7 +810,7 @@ class LanSyncService extends ChangeNotifier {
       }
 
       for (final ip in foundIps) {
-        await _connectToPc(ip);
+        await connectToPeer(ip);
       }
     } catch (e) {
       NexusLogger.log("LAN_SYNC", "Discovery scan error: $e");
@@ -709,10 +819,10 @@ class LanSyncService extends ChangeNotifier {
     }
   }
 
-  Future<void> _connectToPc(String ip) async {
-    if (_peerSockets.containsKey(ip)) return;
+  Future<void> connectToPeer(String ip, {int port = 28471}) async {
+    if (_peerSockets.containsKey(ip) || !_connectingIps.add(ip)) return;
     try {
-      final wsUrl = 'ws://$ip:28471/media';
+      final wsUrl = 'ws://$ip:$port/media';
       NexusLogger.log("LAN_SYNC", "Connecting to node at $wsUrl...");
       final ws = await WebSocket.connect(wsUrl).timeout(const Duration(seconds: 3));
       _ws = ws;
@@ -725,25 +835,23 @@ class LanSyncService extends ChangeNotifier {
       final isOwnIp = _localIps.contains(ip);
 
       if (!isLocalLoopback && !isOwnIp) {
-        final peerName = "Dispositivo ($ip)";
-
         final existingIndex = discoveredPeers.indexWhere((p) => p['ip'] == ip || p['id'] == peerId);
-        final peerEntry = {
-          "id": peerId,
-          "name": peerName,
-          "ip": ip,
-          "online": true,
-          "device_type": "Desktop",
-          "os": "Unknown",
-          "spatial_position": "Center",
-        };
         if (existingIndex >= 0) {
-          discoveredPeers[existingIndex] = peerEntry;
+          discoveredPeers[existingIndex]['online'] = true;
+          discoveredPeers[existingIndex]['ip'] = ip;
         } else {
+          final peerName = "Dispositivo ($ip)";
+          final peerEntry = {
+            "id": peerId,
+            "name": peerName,
+            "ip": ip,
+            "online": true,
+            "device_type": "Desktop",
+            "os": "Unknown",
+            "spatial_position": "Center",
+          };
           discoveredPeers.add(peerEntry);
-        }
-        if (selectedTargetDeviceId == null) {
-          selectedTargetDeviceId = peerId;
+          selectedTargetDeviceId ??= peerId;
         }
         notifyListeners();
       }
@@ -761,7 +869,7 @@ class LanSyncService extends ChangeNotifier {
         "os": Platform.operatingSystem,
         "spatial_position": spatialPosition,
       };
-      ws.add(jsonEncode(announce));
+      if (!isLocalLoopback) ws.add(jsonEncode(announce));
 
       // Keepalive ping across all active peer sockets
       _keepAliveTimer?.cancel();
@@ -782,6 +890,32 @@ class LanSyncService extends ChangeNotifier {
             final text = data.toString();
             final json = jsonDecode(text) as Map<String, dynamic>;
             if (json['type'] == 'PONG') return;
+            if (json['type'] == 'INPUT_STATUS') {
+              final responseId = json['device_id'] as String?;
+              final id = responseId != null && (_socketPeerIds[ip] == responseId || (_peerRoutes[responseId]?.contains(ip) ?? false)) ? responseId : _socketPeerIds[ip];
+              if (id != null) _setInputError(id, json['ok'] == true ? null : json['message'] as String? ?? 'Input non disponibile.');
+              return;
+            }
+            if (json['type'] == 'PEER_DISCONNECTED') {
+              final id = json['id'];
+              _peerRoutes[id]?.remove(ip);
+              for (final peer in discoveredPeers) {
+                if (peer['id'] == id && !_socketPeerIds.containsValue(id) && (_peerRoutes[id]?.isEmpty ?? true)) peer['online'] = false;
+              }
+              notifyListeners();
+              return;
+            }
+
+
+            final inputType = json['type'] as String? ?? '';
+            if (json['target_device_id'] == deviceId &&
+                (inputType.startsWith('TOUCHPAD_') || inputType.startsWith('KEYBOARD_') || json['action'] != null)) {
+              ws.add(jsonEncode({
+                'type': 'INPUT_STATUS', 'ok': false, 'device_id': deviceId,
+                'message': 'Questo comando richiede una connessione diretta al backend del PC.',
+              }));
+              return;
+            }
 
             if (json['type'] == 'OPEN_URL') {
               final url = json['url'] as String? ?? '';
@@ -1057,20 +1191,35 @@ class LanSyncService extends ChangeNotifier {
             if (json['type'] == 'PEER_METADATA' || json['type'] == 'SPATIAL_ARRANGEMENT' || json['type'] == 'PEER_ANNOUNCE') {
               NexusLogger.log("LAN_SYNC", "Received topology/metadata update: $json");
               final pId = json['id'] as String? ?? json['device_id'] as String? ?? json['sender_device_id'] as String? ?? '';
-              final pName = json['name'] as String? ?? json['sender_device'] as String? ?? 'Dispositivo Remoto';
+              final pName = json['name'] as String? ?? json['sender_device'] as String? ?? '';
               final peerType = json['device_type'] as String?;
               final peerOs = json['os'] as String?;
               final peerPos = json['spatial_position'] as String?;
 
+              final isHost = json['is_host'] == true ||
+                  (!_socketPeerIds.containsKey(ip) && json['type'] == 'PEER_ANNOUNCE');
+              if (isHost && pId.isNotEmpty) {
+                _socketPeerIds[ip] = pId;
+                if (isLocalLoopback) {
+                  // The local UI and daemon represent the same physical device.
+                  unawaited(adoptNativeIdentity(pId));
+                  broadcastDeviceMetadata();
+                }
+              }
               if (pId.isNotEmpty && pId != deviceId) {
+                final direct = _socketPeerIds[ip] == pId;
                 registerOrUpdatePeer(
                   id: pId,
                   name: pName,
-                  ip: ip,
+                  ip: direct ? ip : json['ip'] as String?,
                   deviceType: peerType,
                   os: peerOs,
                   spatialPosition: peerPos,
+                  namePriority: json['metadata_source'] == 'discovery' ? 0 : 2,
                 );
+                if (json['metadata_source'] != 'discovery') {
+                  _peerRoutes.putIfAbsent(pId, () => <String>{}).add(ip);
+                }
               }
               if (bleSpatialAutoDetect && isBleHardwareAvailable && estimatedDistanceMeters != null) {
                 autoDetermineSpatialPosition(peerType: peerType);
@@ -1186,33 +1335,55 @@ class LanSyncService extends ChangeNotifier {
         },
         onDone: () {
           NexusLogger.log("LAN_SYNC", "WebSocket connection to PC at $ip closed.");
+          if (!identical(_peerSockets[ip], ws)) return;
           _peerSockets.remove(ip);
-          discoveredPeers.removeWhere((p) => p['ip'] == ip);
+          final disconnectedId = _socketPeerIds.remove(ip);
+          for (final entry in _peerRoutes.entries) {
+            entry.value.remove(ip);
+            if (entry.value.isEmpty && !_socketPeerIds.containsValue(entry.key)) {
+              for (final peer in discoveredPeers) {
+                if (peer['id'] == entry.key) peer['online'] = false;
+              }
+            }
+          }
+          final pIdx = discoveredPeers.indexWhere((p) => p['id'] == disconnectedId || p['id'] == peerId);
+          if (pIdx >= 0 && !_socketPeerIds.containsValue(disconnectedId) &&
+              (_peerRoutes[disconnectedId]?.isEmpty ?? true)) {
+            discoveredPeers[pIdx]['online'] = false;
+          }
           if (_peerSockets.isEmpty) {
             isConnected = false;
             _ws = null;
-            selectedTargetDeviceId = null;
+            _keepAliveTimer?.cancel();
           } else {
             _ws = _peerSockets.values.first;
-            if (selectedTargetDeviceId == peerId) {
-              selectedTargetDeviceId = discoveredPeers.isNotEmpty ? discoveredPeers.first['id'] as String? : null;
-            }
           }
           notifyListeners();
         },
         onError: (err) {
           NexusLogger.log("LAN_SYNC", "WebSocket error on $ip: $err");
+          if (!identical(_peerSockets[ip], ws)) return;
           _peerSockets.remove(ip);
-          discoveredPeers.removeWhere((p) => p['ip'] == ip);
+          final disconnectedId = _socketPeerIds.remove(ip);
+          for (final entry in _peerRoutes.entries) {
+            entry.value.remove(ip);
+            if (entry.value.isEmpty && !_socketPeerIds.containsValue(entry.key)) {
+              for (final peer in discoveredPeers) {
+                if (peer['id'] == entry.key) peer['online'] = false;
+              }
+            }
+          }
+          final pIdx = discoveredPeers.indexWhere((p) => p['id'] == disconnectedId || p['id'] == peerId);
+          if (pIdx >= 0 && !_socketPeerIds.containsValue(disconnectedId) &&
+              (_peerRoutes[disconnectedId]?.isEmpty ?? true)) {
+            discoveredPeers[pIdx]['online'] = false;
+          }
           if (_peerSockets.isEmpty) {
             isConnected = false;
             _ws = null;
-            selectedTargetDeviceId = null;
+            _keepAliveTimer?.cancel();
           } else {
             _ws = _peerSockets.values.first;
-            if (selectedTargetDeviceId == peerId) {
-              selectedTargetDeviceId = discoveredPeers.isNotEmpty ? discoveredPeers.first['id'] as String? : null;
-            }
           }
           notifyListeners();
         },
@@ -1224,34 +1395,13 @@ class LanSyncService extends ChangeNotifier {
         _ws = null;
       }
     }
+    finally {
+      _connectingIps.remove(ip);
+    }
   }
 
   void sendCommand(String action, {int? positionMs, String? targetPeerId}) {
-    if (activeMedia != null) {
-      final act = action.toUpperCase();
-      if (act == 'PAUSE') {
-        activeMedia!['is_playing'] = false;
-      } else if (act == 'PLAY') {
-        activeMedia!['is_playing'] = true;
-      } else if (act == 'PLAY_PAUSE' || act == 'TOGGLE') {
-        activeMedia!['is_playing'] = !(activeMedia!['is_playing'] as bool? ?? false);
-      }
-      notifyListeners();
-    }
-
-    final sock = socketForDevice(targetPeerId);
-    if (sock != null) {
-      final cmd = {
-        "action": action,
-        "position_ms": positionMs,
-      };
-      try {
-        sock.add(jsonEncode(cmd));
-        NexusLogger.log("LAN_SYNC", "Sent command over LAN WebSocket: $cmd to ${targetPeerId ?? selectedTargetDeviceId}");
-      } catch (e) {
-        NexusLogger.log("LAN_SYNC", "Failed to send command: $e");
-      }
-    }
+    _sendInput({'action': action, 'position_ms': positionMs}, targetPeerId);
   }
 
   void sendVolume(double vol, {String? targetPeerId}) {
@@ -1261,26 +1411,18 @@ class LanSyncService extends ChangeNotifier {
       "type": "VOLUME_UPDATE",
       "volume": currentVolume,
     };
-    final encoded = jsonEncode(msg);
     final sock = socketForDevice(targetPeerId);
     if (sock != null) {
       try {
-        sock.add(encoded);
+        sock.add(_encodeForDevice(msg, targetPeerId));
       } catch (_) {}
-    }
-    if (targetPeerId == null) {
-      for (final s in _peerSockets.values) {
-        if (s != sock) {
-          try { s.add(encoded); } catch (_) {}
-        }
-      }
     }
 
     final target = targetPeerId != null
         ? discoveredPeers.firstWhere((p) => p['id'] == targetPeerId || p['ip'] == targetPeerId, orElse: () => <String, dynamic>{})
         : selectedTargetPeer;
-    final targetIp = target?['ip'] as String? ?? pcIp ?? '127.0.0.1';
-    _sendHttpVolume(targetIp, currentVolume);
+    final targetIp = target?['ip'] as String?;
+    if (sock == null && targetIp != null) _sendHttpVolume(targetIp, currentVolume);
   }
 
   void _sendHttpVolume(String ip, double vol) async {
@@ -1298,34 +1440,14 @@ class LanSyncService extends ChangeNotifier {
       "type": "AUDIO_MUTE",
       "muted": muted,
     };
-    final encoded = jsonEncode(msg);
     final sock = socketForDevice(targetPeerId);
     if (sock != null) {
       try {
-        sock.add(encoded);
+        sock.add(_encodeForDevice(msg, targetPeerId));
         NexusLogger.log("LAN_SYNC", "Sent AUDIO_MUTE: $msg");
       } catch (_) {}
     }
-    for (final s in _peerSockets.values) {
-      if (s != sock) {
-        try { s.add(encoded); } catch (_) {}
-      }
-    }
 
-    final target = targetPeerId != null
-        ? discoveredPeers.firstWhere((p) => p['id'] == targetPeerId || p['ip'] == targetPeerId, orElse: () => <String, dynamic>{})
-        : selectedTargetPeer;
-    final targetIp = target?['ip'] as String? ?? pcIp ?? '127.0.0.1';
-    _sendHttpMute(targetIp);
-  }
-
-  void _sendHttpMute(String ip) async {
-    try {
-      final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 500);
-      final req = await client.getUrl(Uri.parse('http://$ip:28472/api/mute'));
-      await req.close();
-      client.close();
-    } catch (_) {}
   }
 
   Future<void> togglePcSpeakersMute({String? targetPeerId}) async {
@@ -1345,18 +1467,14 @@ class LanSyncService extends ChangeNotifier {
     sendCommand("MUTE", targetPeerId: targetPeerId);
   }
 
-  void sendOpenUrl(String url, String title, int positionMs) {
-    if (_ws != null && isConnected) {
-      final msg = {
-        "type": "OPEN_URL",
-        "url": url,
-        "title": title,
-        "position_ms": positionMs,
-      };
-      try {
-        _ws!.add(jsonEncode(msg));
-        NexusLogger.log("LAN_SYNC", "Sent OPEN_URL over LAN WebSocket: $msg");
-      } catch (_) {}
+  void sendOpenUrl(String url, String title, int positionMs, {String? targetPeerId}) {
+    final socket = targetPeerId == null ? _ws : socketForDevice(targetPeerId);
+    if (socket == null) return;
+    final message = {'type': 'OPEN_URL', 'url': url, 'title': title, 'position_ms': positionMs};
+    try {
+      socket.add(targetPeerId == null ? jsonEncode(message) : _encodeForDevice(message, targetPeerId));
+    } catch (error) {
+      NexusLogger.log('LAN_SYNC', 'OPEN_URL delivery failed: $error');
     }
   }
 
@@ -1963,8 +2081,8 @@ class LanSyncService extends ChangeNotifier {
     _mediaHandoffPromptController.add(promptData);
   }
 
-  void triggerProximityDepartureHandoff({bool simulate = false, double? testDistance}) {
-    final dist = testDistance ?? 3.5;
+  void triggerProximityDepartureHandoff({double? distanceMeters}) {
+    final dist = distanceMeters ?? 3.5;
     proximityMotion = "MovingAway";
     estimatedDistanceMeters = dist;
     _isDeparted = false; // Reset so departure trigger fires cleanly
@@ -1972,100 +2090,31 @@ class LanSyncService extends ChangeNotifier {
   }
 
   void sendTouchpadDelta(int dx, int dy, {String? targetPeerId}) {
-    final sock = socketForDevice(targetPeerId);
-    if (sock != null) {
-      final msg = {
-        "type": "TOUCHPAD_DELTA",
-        "dx": dx,
-        "dy": dy,
-      };
-      try {
-        sock.add(jsonEncode(msg));
-      } catch (_) {}
-    }
+    _sendInput({"type": "TOUCHPAD_DELTA", "dx": dx, "dy": dy}, targetPeerId);
   }
 
   void sendTouchpadScroll(int dy, {String? targetPeerId}) {
-    final sock = socketForDevice(targetPeerId);
-    if (sock != null) {
-      final msg = {
-        "type": "TOUCHPAD_SCROLL",
-        "dy": dy,
-      };
-      try {
-        sock.add(jsonEncode(msg));
-      } catch (_) {}
-    }
+    _sendInput({"type": "TOUCHPAD_SCROLL", "dy": dy}, targetPeerId);
   }
 
   void sendTouchpadClick(String button, {String? targetPeerId}) {
-    final sock = socketForDevice(targetPeerId);
-    if (sock != null) {
-      final msg = {
-        "type": "TOUCHPAD_CLICK",
-        "button": button,
-      };
-      try {
-        sock.add(jsonEncode(msg));
-      } catch (_) {}
-    }
+    _sendInput({"type": "TOUCHPAD_CLICK", "button": button}, targetPeerId);
   }
 
   void sendTouchpadButton(String button, bool isDown, {String? targetPeerId}) {
-    final sock = socketForDevice(targetPeerId);
-    if (sock != null) {
-      final msg = {
-        "type": "TOUCHPAD_BUTTON",
-        "button": button,
-        "is_down": isDown,
-      };
-      try {
-        sock.add(jsonEncode(msg));
-      } catch (_) {}
-    }
+    _sendInput({"type": "TOUCHPAD_BUTTON", "button": button, "is_down": isDown}, targetPeerId);
   }
 
   void sendKeyboardKey(String key, {bool? isDown, String? targetPeerId}) {
-    final sock = socketForDevice(targetPeerId);
-    if (sock != null) {
-      final msg = {
-        "type": "KEYBOARD_KEY",
-        "key": key,
-        "is_down": ?isDown,
-      };
-      try {
-        sock.add(jsonEncode(msg));
-        NexusLogger.log("KEYBOARD", "Sent KEYBOARD_KEY: $key (down: $isDown) to ${targetPeerId ?? selectedTargetDeviceId}");
-      } catch (_) {}
-    }
+    _sendInput({'type': 'KEYBOARD_KEY', 'key': key, 'is_down': ?isDown}, targetPeerId);
   }
 
   void sendKeyboardCombo(List<String> keys, {String? targetPeerId}) {
-    final sock = socketForDevice(targetPeerId);
-    if (sock != null) {
-      final msg = {
-        "type": "KEYBOARD_COMBO",
-        "keys": keys,
-      };
-      try {
-        sock.add(jsonEncode(msg));
-        NexusLogger.log("KEYBOARD", "Sent KEYBOARD_COMBO: ${keys.join('+')} to ${targetPeerId ?? selectedTargetDeviceId}");
-      } catch (_) {}
-    }
+    _sendInput({'type': 'KEYBOARD_COMBO', 'keys': keys}, targetPeerId);
   }
 
   void sendTextInput(String text, {String? targetPeerId}) {
-    final sock = socketForDevice(targetPeerId);
-    if (sock != null) {
-      final msg = {
-        "type": "KEYBOARD_TEXT",
-        "text": text,
-      };
-      try {
-        sock.add(jsonEncode(msg));
-        NexusLogger.log("KEYBOARD", "Sent KEYBOARD_TEXT: ${text.length} chars to ${targetPeerId ?? selectedTargetDeviceId}");
-      } catch (_) {}
-    }
+    _sendInput({'type': 'KEYBOARD_TEXT', 'text': text}, targetPeerId);
   }
 
   void requestFileResume(String fileId) {

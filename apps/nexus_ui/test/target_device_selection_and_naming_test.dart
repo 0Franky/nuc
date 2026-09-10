@@ -1,9 +1,7 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:nexus_ui/services/lan_sync_service.dart';
-import 'package:nexus_ui/models/device_colors.dart';
 import 'package:nexus_ui/widgets/target_device_selector.dart';
 
 void main() {

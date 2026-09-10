@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -194,7 +193,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(height: 12),
             Text(
-              'IP Locale: $localIp • Porta 28471 (E2EE ChaCha20)',
+              'IP Locale: $localIp • Porta 28471',
               style: const TextStyle(fontSize: 12, color: NexusTheme.textSecondary),
             ),
           ],
@@ -217,9 +216,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final rawPeers = _engineState['discovered_peers'] as List? ?? [];
     final peers = rawPeers.map((p) => p is Map ? Map<String, dynamic>.from(p) : <String, dynamic>{}).where((p) => p.isNotEmpty).toList();
 
-    final isMobile = Platform.isAndroid || Platform.isIOS;
-    final isConnected = LanSyncService.instance.isConnected || !isMobile;
-    final localIp = _engineState['local_lan_ip'] as String? ?? '127.0.0.1';
 
     return Scaffold(
       appBar: AppBar(

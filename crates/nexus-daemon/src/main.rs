@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     info!("=================================================");
 
     // 2. Cryptographic Identity
-    let identity = DeviceIdentity::generate();
+    let identity = DeviceIdentity::load_or_create()?;
     let device_id = identity.device_id;
     let fingerprint = identity.fingerprint();
     let raw_id = device_id.to_string().replace('-', "");
@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         "CORE".to_string()
     };
-    let hostname = format!("{}-{}", whoami_hostname(), suffix);
+    let hostname = DeviceIdentity::device_name(format!("{}-{}", whoami_hostname(), suffix));
 
     info!("Device ID:    {}", device_id);
     info!("Fingerprint:  {}", fingerprint);
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let (bus, mut command_rx) = EventBus::new(256, 128);
 
     // 4. Spawn Plugin Actors
-    let media_actor = MediaPluginActor::new(device_id);
+    let media_actor = MediaPluginActor::new(device_id).with_device_name(hostname.clone());
     let shared_ws_clients = media_actor.shared_clients(); // Extract before spawn consumes it
     ActorSupervisor::spawn_actor(media_actor, bus.clone());
 
@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
 
     let notification_actor = NotificationPluginActor::new(
         device_id,
-        shared_ws_clients,
+        shared_ws_clients.clone(),
         hostname.clone(),
     );
     ActorSupervisor::spawn_actor(notification_actor, bus.clone());
@@ -103,13 +103,27 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // 7. Event Monitor Loop (Logs incoming peer activity)
+    // 7. Event Monitor Loop (Logs incoming peer activity & forwards to UI clients)
     let mut event_sub = bus.subscribe();
+    let ws_clients_for_discovery = shared_ws_clients.clone();
     tokio::spawn(async move {
         while let Ok(event) = event_sub.recv().await {
             match event {
                 NexusEvent::PeerDiscovered(peer) => {
                     info!("🟢 Discovered Peer: '{}' ({})", peer.name, peer.id);
+                    let announce_msg = serde_json::json!({
+                        "type": "PEER_ANNOUNCE",
+                        "metadata_source": "discovery",
+                        "name": peer.name,
+                        "id": peer.id.to_string(),
+                        "device_id": peer.id.to_string(),
+                        "device_type": format!("{:?}", peer.device_type),
+                        "os": format!("{:?}", peer.os),
+                    });
+                    if let Ok(announce_str) = serde_json::to_string(&announce_msg) {
+                        let mut clients = ws_clients_for_discovery.write().await;
+                        clients.retain(|c| c.send(announce_str.clone()).is_ok());
+                    }
                 }
                 NexusEvent::PeerConnected(peer_id) => {
                     info!("🔗 Connected with Peer: {}", peer_id);
@@ -138,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn whoami_hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "Nexus Desktop".to_string())
+    match std::env::consts::OS {
+        "windows" => "PC Windows", "linux" => "PC Linux", "macos" => "Mac", _ => "Nexus",
+    }.to_string()
 }

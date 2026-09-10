@@ -68,7 +68,6 @@ class NexusFfiBridge {
   NexusSetMasterVolumeDart? _nexusSetMasterVolume;
   NexusToggleAudioMuteDart? _nexusToggleAudioMute;
   NexusSendMediaControlDart? _nexusSendMediaControl;
-  NexusSendTouchpadDeltaDart? _nexusSendTouchpadDelta;
   NexusSyncClipboardDart? _nexusSyncClipboard;
   NexusOfferFileTransferDart? _nexusOfferFileTransfer;
   NexusClassifyClipboardDart? _nexusClassifyClipboard;
@@ -81,25 +80,17 @@ class NexusFfiBridge {
   }
 
   void _loadLibrary() {
-    final searchPaths = <String>[];
-
-    try {
-      final exeDir = File(Platform.resolvedExecutable).parent.path;
-      searchPaths.add('$exeDir/nexus_ffi.dll');
-    } catch (_) {}
-
+    final libraryName = Platform.isWindows ? 'nexus_ffi.dll'
+        : (Platform.isMacOS ? 'libnexus_ffi.dylib' : 'libnexus_ffi.so');
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
     final curr = Directory.current.path;
-    searchPaths.addAll([
-      '$curr/nexus_ffi.dll',
-      '$curr/dist/windows/nexus_ffi.dll',
-      '$curr/target/release/nexus_ffi.dll',
-      '$curr/target/debug/nexus_ffi.dll',
-      '$curr/../target/release/nexus_ffi.dll',
-      '$curr/../target/debug/nexus_ffi.dll',
-      '$curr/../../target/release/nexus_ffi.dll',
-      '$curr/../../target/debug/nexus_ffi.dll',
-      'nexus_ffi.dll',
-    ]);
+    final searchPaths = <String>[
+      '$exeDir/$libraryName', '$exeDir/lib/$libraryName',
+      '$curr/$libraryName', '$curr/dist/${Platform.operatingSystem}/$libraryName',
+      for (final root in [curr, '$curr/..', '$curr/../..']) ...[
+        '$root/target/release/$libraryName', '$root/target/debug/$libraryName',
+      ],
+    ];
 
     for (final path in searchPaths) {
       if (File(path).existsSync()) {
@@ -133,7 +124,7 @@ class NexusFfiBridge {
       _lastLoadError = 'DynamicLibrary.open failed: $e';
     }
 
-    developer.log('[NexusFfiBridge] CRITICAL: Could not load nexus_ffi.dll! Error: $_lastLoadError', name: 'NexusFfiBridge');
+    developer.log('[NexusFfiBridge] CRITICAL: Could not load $libraryName! Error: $_lastLoadError', name: 'NexusFfiBridge');
   }
 
   void _bindFunctions(ffi.DynamicLibrary lib) {
@@ -147,7 +138,6 @@ class NexusFfiBridge {
       _nexusToggleAudioMute = lib.lookupFunction<NexusToggleAudioMuteC, NexusToggleAudioMuteDart>('nexus_toggle_audio_mute');
     } catch (_) {}
     _nexusSendMediaControl = lib.lookupFunction<NexusSendMediaControlC, NexusSendMediaControlDart>('nexus_send_media_control');
-    _nexusSendTouchpadDelta = lib.lookupFunction<NexusSendTouchpadDeltaC, NexusSendTouchpadDeltaDart>('nexus_send_touchpad_delta');
     _nexusSyncClipboard = lib.lookupFunction<NexusSyncClipboardC, NexusSyncClipboardDart>('nexus_sync_clipboard');
     _nexusOfferFileTransfer = lib.lookupFunction<NexusOfferFileTransferC, NexusOfferFileTransferDart>('nexus_offer_file_transfer');
     try {
@@ -170,7 +160,7 @@ class NexusFfiBridge {
       _loadLibrary();
       if (_nexusInit == null) {
         NexusLogger.log('FFI', 'Native DLL not available on ${Platform.operatingSystem}. Starting LanSyncService.');
-        _deviceId = "nexus-${Platform.operatingSystem}-node";
+        _deviceId = LanSyncService.instance.deviceId;
         LanSyncService.instance.start();
         return _deviceId!;
       }
@@ -180,6 +170,7 @@ class NexusFfiBridge {
     final resPtr = _nexusInit!(namePtr);
     malloc.free(namePtr);
 
+    if (resPtr == ffi.nullptr) throw StateError("Nexus identity initialization failed");
     final id = resPtr.toDartString();
     _nexusFreeString!(resPtr);
     _deviceId = id;
@@ -194,12 +185,12 @@ class NexusFfiBridge {
         final lan = LanSyncService.instance;
         return {
           "initialized": true,
-          "device_id": _deviceId ?? "nexus-${Platform.operatingSystem}-node",
+          "device_id": lan.deviceId,
           "local_lan_ip": lan.pcIp ?? "127.0.0.1",
           "active_media": lan.activeMedia,
           "discovered_peers": lan.discoveredPeers,
           "clipboard_history": [],
-          "audio_relay_active": lan.isConnected,
+          "audio_relay_active": false,
           "audio_volume": lan.currentVolume,
           "audio_muted": lan.isAudioMuted,
           "spatial_position": lan.spatialPosition,
@@ -218,6 +209,8 @@ class NexusFfiBridge {
     parsed["device_type"] = LanSyncService.instance.deviceType;
     parsed["proximity_motion"] = LanSyncService.instance.proximityMotion;
     parsed["estimated_distance_m"] = LanSyncService.instance.estimatedDistanceMeters;
+    parsed["discovered_peers"] = LanSyncService.instance.discoveredPeers;
+    parsed["device_id"] = LanSyncService.instance.deviceId;
     return parsed;
   }
 
@@ -258,7 +251,11 @@ class NexusFfiBridge {
 
   /// Sets Master Audio Volume (0.0 to 1.0)
   int setMasterVolume(double volume) {
-    LanSyncService.instance.sendVolume(volume);
+    final lan = LanSyncService.instance;
+    if (lan.selectedTargetDeviceId != null || _nexusSetMasterVolume == null) {
+      lan.sendVolume(volume);
+      return lan.targetSocket == null ? -1 : 0;
+    }
     if (_nexusSetMasterVolume == null) return 0;
     return _nexusSetMasterVolume!(volume.clamp(0.0, 1.0));
   }
@@ -285,7 +282,11 @@ class NexusFfiBridge {
 
   /// Sends a remote control command (PLAY, PAUSE, SEEK, MUTE) to browser extensions or PC over LAN
   int sendMediaControl(String action, {int? positionMs}) {
-    LanSyncService.instance.sendCommand(action, positionMs: positionMs);
+    final lan = LanSyncService.instance;
+    if (lan.selectedTargetDeviceId != null || _nexusSendMediaControl == null) {
+      lan.sendCommand(action, positionMs: positionMs);
+      return lan.targetSocket == null ? -1 : 0;
+    }
     if (_nexusSendMediaControl == null) {
       return 0;
     }
@@ -298,14 +299,8 @@ class NexusFfiBridge {
 
   /// Emits trackpad delta
   int sendTouchpadDelta(String peerId, int dx, int dy) {
-    if (_nexusSendTouchpadDelta == null) {
-      LanSyncService.instance.sendTouchpadDelta(dx, dy, targetPeerId: peerId);
-      return 0;
-    }
-    final peerPtr = peerId.toNativeUtf8();
-    final res = _nexusSendTouchpadDelta!(peerPtr, dx, dy);
-    malloc.free(peerPtr);
-    return res;
+    LanSyncService.instance.sendTouchpadDelta(dx, dy, targetPeerId: peerId);
+    return LanSyncService.instance.socketForDevice(peerId) == null ? -1 : 0;
   }
 
   /// Emits mouse button click (Left, Right)

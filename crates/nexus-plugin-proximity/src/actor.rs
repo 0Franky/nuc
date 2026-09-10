@@ -88,19 +88,37 @@ impl ProximityPluginActor {
 
 #[cfg(target_os = "windows")]
 pub fn lock_workstation() -> bool {
-    // Only lock physical Windows session if explicitly enabled in production via env var
-    if std::env::var("NEXUS_ENABLE_REAL_SCREEN_LOCK").unwrap_or_default() == "1" {
-        use windows_sys::Win32::System::Shutdown::LockWorkStation;
-        unsafe { LockWorkStation() != 0 }
-    } else {
-        tracing::info!("🔒 [SIMULATED] LockWorkStation called (real screen lock neutralized for developer safety).");
-        true
-    }
+    use windows_sys::Win32::System::Shutdown::LockWorkStation;
+    unsafe { LockWorkStation() != 0 }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn lock_workstation() -> bool {
-    true
+    let res = std::process::Command::new("loginctl")
+        .arg("lock-session")
+        .status();
+    if let Ok(status) = res {
+        if status.success() {
+            return true;
+        }
+    }
+    let res = std::process::Command::new("xdg-screensaver")
+        .arg("lock")
+        .status();
+    res.map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+pub fn lock_workstation() -> bool {
+    let res = std::process::Command::new("pmset")
+        .arg("displaysleepnow")
+        .status();
+    res.map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux"), not(target_os = "macos")))]
+pub fn lock_workstation() -> bool {
+    false
 }
 
 #[async_trait]

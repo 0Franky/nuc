@@ -1,4 +1,4 @@
-﻿// ignore_for_file: avoid_print
+// ignore_for_file: avoid_print
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -70,8 +70,7 @@ void main() {
     });
 
     // 5. User takes phone and walks away (Proximity distance increases to 3.8m, motion: MovingAway)
-    print('5. Proximity departure detected (Distance: 3.8m, Motion: MovingAway)...');
-    lan.triggerProximityDepartureHandoff(simulate: true, testDistance: 3.8);
+    lan.triggerProximityDepartureHandoff(distanceMeters: 3.8);
 
     // 6. Verify Mobile LanSyncService state
     expect(lan.activeMedia!['is_playing'], false, reason: 'Mobile must mark PC media as paused immediately');

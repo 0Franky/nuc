@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../models/device_colors.dart';
 import '../services/lan_sync_service.dart';
 import '../theme/nexus_theme.dart';
 
@@ -32,11 +31,13 @@ class TargetDeviceSelector extends StatelessWidget {
 
         // Filter peers if needed (e.g. desktop only for touchpad remote)
         var peers = allPeers.where((p) {
-          if (p['online'] == false) return false;
-          if (filterType != null && p['device_type'] != filterType) {
-            final os = (p['os'] as String?)?.toLowerCase() ?? '';
-            final isDesktopOs = os.contains('windows') || os.contains('mac') || os.contains('linux');
-            if (!isDesktopOs) return false;
+          if (filterType != null) {
+            if (filterType == 'Desktop') {
+              final isDesktop = LanSyncService.isDesktopPeer(p);
+              if (!isDesktop) return false;
+            } else if (p['device_type'] != filterType) {
+              return false;
+            }
           }
           return true;
         }).toList();
@@ -115,9 +116,10 @@ class TargetDeviceSelector extends StatelessWidget {
                   child: Row(
                     children: peers.map((peer) {
                 final id = peer['id'] as String? ?? '';
+                final online = peer['online'] != false;
                 final name = peer['name'] as String? ?? 'Dispositivo';
-                final isSelected = id == currentTargetId || (peers.length == 1 && id.isNotEmpty);
-                final devColor = NexusDeviceColors.colorForDeviceName(name);
+                final isSelected = id == currentTargetId;
+                final devColor = NexusDeviceColors.colorForDevice(id);
                 final isDesktop = (peer['device_type'] as String?) == 'Desktop' ||
                     (peer['os'] as String?)?.toLowerCase() == 'windows' ||
                     name.toLowerCase().contains('pc');
@@ -129,6 +131,7 @@ class TargetDeviceSelector extends StatelessWidget {
                     child: InkWell(
                       borderRadius: BorderRadius.circular(10),
                       onTap: () {
+                        if (!online) return;
                         lan.selectTargetDevice(id);
                         onDeviceSelected?.call(id);
                       },
@@ -184,7 +187,7 @@ class TargetDeviceSelector extends StatelessWidget {
                             ),
                             const SizedBox(width: 6),
                             Text(
-                              name,
+                              online ? name : '$name · offline',
                               style: TextStyle(
                                 fontSize: compact ? 12 : 13,
                                 fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,

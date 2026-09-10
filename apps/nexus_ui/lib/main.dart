@@ -31,10 +31,12 @@ export 'widgets/nexus_media_card.dart';
 export 'widgets/nexus_audio_card.dart';
 export 'widgets/nexus_continuity_island.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await LanSyncService.instance.loadSettings();
   try {
-    NexusFfiBridge.instance.init("Nexus Flutter Node");
+    final id = NexusFfiBridge.instance.init(LanSyncService.instance.deviceName);
+    await LanSyncService.instance.adoptNativeIdentity(id);
   } catch (e) {
     NexusLogger.log("INIT", "Native FFI init non-fatal: $e");
   }

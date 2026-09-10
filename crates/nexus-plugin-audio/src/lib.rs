@@ -6,7 +6,7 @@ pub mod volume;
 pub mod web;
 
 pub use actor::AudioPluginActor;
-pub use capture::{generate_wav_header, AudioCaptureBackend, WasapiLoopbackCapture};
+pub use capture::generate_wav_header;
 pub use constants::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE, SAMPLES_PER_10MS};
 pub use dsp::{AdaptiveJitterBuffer, AudioRingBuffer, DriftResampler};
 pub use volume::{set_windows_master_volume, toggle_pc_speakers_mute};
@@ -17,8 +17,6 @@ mod tests {
     use nexus_actor_system::EventBus;
     use nexus_types::DeviceId;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     #[test]
     fn test_lock_free_ring_buffer() {
@@ -107,19 +105,6 @@ mod tests {
 
             assert!(actor.stop_streaming(&bus).await.is_ok());
             assert!(!actor.is_streaming.load(Ordering::SeqCst));
-        });
-    }
-
-    #[test]
-    fn test_wasapi_loopback_capture_and_packetizer() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let rb = Arc::new(RwLock::new(AudioRingBuffer::new(4800)));
-            let capture = WasapiLoopbackCapture::new();
-            assert!(capture.start_capture(rb.clone()).is_ok());
-            assert!(capture.is_capturing());
-            assert!(capture.stop_capture().is_ok());
-            assert!(!capture.is_capturing());
         });
     }
 

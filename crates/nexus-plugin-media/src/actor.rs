@@ -13,6 +13,8 @@ use crate::session::{append_log, ActiveMediaSession};
 #[derive(Clone)]
 pub struct MediaPluginActor {
     pub device_id: DeviceId,
+    device_name: Arc<RwLock<String>>,
+    peers: Arc<RwLock<std::collections::BTreeMap<String, (serde_json::Value, tokio::sync::mpsc::UnboundedSender<String>)>>>,
     current_session: Arc<RwLock<Option<ActiveMediaSession>>>,
     connected_clients: Arc<RwLock<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
     has_fired_departure_handoff: Arc<std::sync::atomic::AtomicBool>,
@@ -22,10 +24,17 @@ impl MediaPluginActor {
     pub fn new(device_id: DeviceId) -> Self {
         Self {
             device_id,
+            device_name: Arc::new(RwLock::new(format!("Nexus-{}", &device_id.to_string()[..4]))),
+            peers: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             current_session: Arc::new(RwLock::new(None)),
             connected_clients: Arc::new(RwLock::new(Vec::new())),
             has_fired_departure_handoff: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    pub fn with_device_name(mut self, name: String) -> Self {
+        self.device_name = Arc::new(RwLock::new(name));
+        self
     }
 
     pub fn clone_handle(&self) -> Self {
@@ -227,6 +236,27 @@ impl NexusActor for MediaPluginActor {
                                     clients.push(tx.clone());
                                 }
 
+                                // Send host's own identity announcement immediately to new client
+                                let self_name = actor.device_name.read().await.clone();
+                                let self_announce = serde_json::json!({
+                                    "type": "PEER_ANNOUNCE",
+                                    "name": self_name,
+                                    "is_host": true,
+                                    "id": actor.device_id.to_string(),
+                                    "device_id": actor.device_id.to_string(),
+                                    "device_type": "Desktop",
+                                    "os": std::env::consts::OS,
+                                    "spatial_position": "Center",
+                                });
+                                if let Ok(ann_str) = serde_json::to_string(&self_announce) {
+                                    let _ = tx.send(ann_str);
+                                }
+
+                                for (metadata, _) in actor.peers.read().await.values() {
+                                    let _ = tx.send(metadata.to_string());
+                                }
+                                let mut registered_peer: Option<DeviceId> = None;
+
                                 // Send current active media playback snapshot immediately to new client
                                 if let Some(session) = actor.get_current_session().await {
                                     if let Ok(sess_json) = serde_json::to_string(&session) {
@@ -256,35 +286,97 @@ impl NexusActor for MediaPluginActor {
                                         {
                                             let msg_type = json_val["type"].as_str().unwrap_or("");
 
+                                            if let Some(target) = json_val["target_device_id"].as_str() {
+                                                if target != actor.device_id.to_string() {
+                                                    let peers = actor.peers.read().await;
+                                                    if let Some((_, destination)) = peers.get(target) {
+                                                        let _ = destination.send(text.clone());
+                                                    } else {
+                                                        let _ = tx.send(input_status(DeviceId::from_bytes(*uuid::Uuid::parse_str(target).unwrap_or_default().as_bytes()), Err(NexusError::Plugin {
+                                                            plugin: "routing", message: "Dispositivo destinazione non connesso".into(),
+                                                        })));
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+
                                             if msg_type == "PING" {
                                                 continue;
                                             }
 
-                                            if msg_type == "PEER_ANNOUNCE" {
+                                            if msg_type == "PEER_ANNOUNCE" || msg_type == "PEER_METADATA" {
                                                 let peer_name = json_val["name"]
                                                     .as_str()
-                                                    .unwrap_or("Smartphone Android")
+                                                    .unwrap_or("Dispositivo Remoto")
                                                     .to_string();
-                                                let peer_id_str =
-                                                    json_val["id"].as_str().unwrap_or("").to_string();
+                                                let peer_id_str = json_val["id"]
+                                                    .as_str()
+                                                    .or_else(|| json_val["device_id"].as_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                let peer_device_type_str = json_val["device_type"]
+                                                    .as_str()
+                                                    .unwrap_or("Desktop");
+                                                let peer_os_str = json_val["os"]
+                                                    .as_str()
+                                                    .unwrap_or(std::env::consts::OS);
+                                                let peer_pos_str = json_val["spatial_position"]
+                                                    .as_str()
+                                                    .unwrap_or("Center");
+
                                                 append_log(
                                                     "nexus_daemon.log",
                                                     &format!(
-                                                        "[LAN Peer Connected] {} ({}) from {}",
-                                                        peer_name, peer_id_str, addr
+                                                        "[LAN Peer Connected] {} ({}) type: {} os: {} from {}",
+                                                        peer_name, peer_id_str, peer_device_type_str, peer_os_str, addr
                                                     ),
                                                 );
                                                 let peer_id =
                                                     match uuid::Uuid::parse_str(&peer_id_str) {
                                                         Ok(u) => DeviceId::from_bytes(*u.as_bytes()),
-                                                        Err(_) => DeviceId::new_random(),
+                                                        Err(_) => continue,
                                                     };
+
+                                                if peer_id == actor.device_id {
+                                                    if addr.ip().is_loopback() && !peer_name.trim().is_empty() {
+                                                        *actor.device_name.write().await = peer_name.clone();
+                                                        if let Err(error) = nexus_crypto::DeviceIdentity::save_device_name(&peer_name) {
+                                                            tracing::warn!("Cannot persist device name: {error}");
+                                                        }
+                                                        let metadata = serde_json::json!({
+                                                            "type": "PEER_METADATA", "id": actor.device_id.to_string(),
+                                                            "name": peer_name, "device_type": "Desktop", "os": std::env::consts::OS,
+                                                        }).to_string();
+                                                        actor.connected_clients.write().await.retain(|c| c.send(metadata.clone()).is_ok());
+                                                    }
+                                                    continue;
+                                                }
+                                                // One identity per connection; renaming must not create a new device.
+                                                if registered_peer.is_some_and(|id| id != peer_id) { continue; }
+                                                registered_peer = Some(peer_id);
+
+                                                let device_type = match peer_device_type_str.to_lowercase().as_str() {
+                                                    "mobile" | "phone" | "smartphone" => nexus_types::DeviceType::Mobile,
+                                                    "tablet" => nexus_types::DeviceType::Tablet,
+                                                    "laptop" => nexus_types::DeviceType::Laptop,
+                                                    _ => nexus_types::DeviceType::Desktop,
+                                                };
+
+                                                let os_type = match peer_os_str.to_lowercase().as_str() {
+                                                    "windows" => nexus_types::OsType::Windows,
+                                                    "macos" | "darwin" => nexus_types::OsType::MacOS,
+                                                    "linux" => nexus_types::OsType::Linux,
+                                                    "android" => nexus_types::OsType::Android,
+                                                    "ios" => nexus_types::OsType::IOS,
+                                                    _ => nexus_types::OsType::Unknown,
+                                                };
+
                                                 bus_inner.publish(NexusEvent::PeerDiscovered(
                                                     nexus_types::PeerInfo {
                                                         id: peer_id,
                                                         name: peer_name.clone(),
-                                                        device_type: nexus_types::DeviceType::Mobile,
-                                                        os: nexus_types::OsType::Android,
+                                                        device_type,
+                                                        os: os_type,
                                                         capabilities: nexus_types::CapabilityMap::new()
                                                             .with_capability(
                                                                 nexus_types::Capability::MediaHandoff,
@@ -302,10 +394,13 @@ impl NexusActor for MediaPluginActor {
                                                     "type": "PEER_ANNOUNCE",
                                                     "name": peer_name,
                                                     "id": peer_id.to_string(),
-                                                    "device_type": "Mobile",
-                                                    "os": "Android",
+                                                    "device_id": peer_id.to_string(),
+                                                    "device_type": peer_device_type_str,
+                                                    "os": peer_os_str,
+                                                    "spatial_position": peer_pos_str,
                                                     "ip": addr.ip().to_string(),
                                                 });
+                                                actor.peers.write().await.insert(peer_id.to_string(), (announce_msg.clone(), tx.clone()));
                                                 if let Ok(announce_str) =
                                                     serde_json::to_string(&announce_msg)
                                                 {
@@ -332,9 +427,10 @@ impl NexusActor for MediaPluginActor {
                                                     nexus_plugin_input::TouchpadBallistics::default();
                                                 let (scaled_dx, scaled_dy) =
                                                     ballistics.calculate_delta(dx as f32, dy as f32);
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_mouse_move_relative(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_mouse_move_relative(
                                                     scaled_dx, scaled_dy,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
@@ -346,9 +442,10 @@ impl NexusActor for MediaPluginActor {
                                                 } else {
                                                     nexus_protocol::MouseButton::Left
                                                 };
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_mouse_click(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_mouse_click(
                                                     btn,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
@@ -364,17 +461,19 @@ impl NexusActor for MediaPluginActor {
                                                 } else {
                                                     nexus_protocol::MouseButton::Left
                                                 };
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_mouse_button(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_mouse_button(
                                                     btn, is_down,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
                                             if msg_type == "TOUCHPAD_SCROLL" {
                                                 let dy = json_val["dy"].as_i64().unwrap_or(0) as i32;
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_mouse_wheel(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_mouse_wheel(
                                                     dy,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
@@ -389,9 +488,10 @@ impl NexusActor for MediaPluginActor {
                                                         key_str, is_down
                                                     ),
                                                 );
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_keyboard_key(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_keyboard_key(
                                                     key_str, is_down,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
@@ -407,9 +507,10 @@ impl NexusActor for MediaPluginActor {
                                                             keys_vec
                                                         ),
                                                     );
-                                                    let _ = nexus_plugin_input::NativeInputInjector::inject_keyboard_combo(
+                                                    let result = nexus_plugin_input::NativeInputInjector::inject_keyboard_combo(
                                                         &keys_vec,
                                                     );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 }
                                                 continue;
                                             }
@@ -424,9 +525,10 @@ impl NexusActor for MediaPluginActor {
                                                         text_val.len()
                                                     ),
                                                 );
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_unicode_text(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_unicode_text(
                                                     text_val,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
@@ -569,18 +671,20 @@ impl NexusActor for MediaPluginActor {
                                                     .as_i64()
                                                     .unwrap_or(1080)
                                                     as i32;
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_mouse_move_absolute(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_mouse_move_absolute(
                                                     entry_x, entry_y, sw, sh,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
                                             if msg_type == "UNIVERSAL_CONTROL_DELTA" {
                                                 let dx = json_val["dx"].as_i64().unwrap_or(0) as i32;
                                                 let dy = json_val["dy"].as_i64().unwrap_or(0) as i32;
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_mouse_move_relative(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_mouse_move_relative(
                                                     dx, dy,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
@@ -598,9 +702,10 @@ impl NexusActor for MediaPluginActor {
                                                         session.is_playing = false;
                                                     }
                                                     drop(current);
-                                                    let _ = nexus_plugin_input::NativeInputInjector::inject_media_key(
+                                                    let result = nexus_plugin_input::NativeInputInjector::inject_media_key(
                                                         "PAUSE",
                                                     );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                     actor.send_remote_command("PAUSE".into(), None).await;
                                                 }
                                                 continue;
@@ -687,9 +792,10 @@ impl NexusActor for MediaPluginActor {
                                                     });
                                                 }
                                                 // Also inject Media Key so system media players react immediately
-                                                let _ = nexus_plugin_input::NativeInputInjector::inject_media_key(
+                                                let result = nexus_plugin_input::NativeInputInjector::inject_media_key(
                                                     action,
                                                 );
+                                                let _ = tx.send(input_status(actor.device_id, result));
                                                 continue;
                                             }
 
@@ -744,6 +850,16 @@ impl NexusActor for MediaPluginActor {
                                     }
                                 }
 
+                                if let Some(peer_id) = registered_peer {
+                                    let mut peers = actor.peers.write().await;
+                                    let id = peer_id.to_string();
+                                    if peers.get(&id).is_some_and(|(_, sender)| sender.same_channel(&tx)) {
+                                        peers.remove(&id);
+                                        bus_inner.publish(NexusEvent::PeerDisconnected(peer_id));
+                                        let message = serde_json::json!({"type": "PEER_DISCONNECTED", "id": id}).to_string();
+                                        actor.connected_clients.write().await.retain(|c| c.send(message.clone()).is_ok());
+                                    }
+                                }
                                 write_task.abort();
                             }
                         });
@@ -895,7 +1011,8 @@ impl NexusActor for MediaPluginActor {
                                 let session_clone = session.clone();
                                 drop(current);
 
-                                let _ = nexus_plugin_input::NativeInputInjector::inject_media_key("PAUSE");
+                                let result = nexus_plugin_input::NativeInputInjector::inject_media_key("PAUSE");
+                                if let Err(error) = result { tracing::warn!("Native media input failed: {error}"); }
                                 self.send_remote_command("PAUSE".into(), None).await;
 
                                 let handoff_msg = serde_json::json!({
@@ -941,7 +1058,8 @@ impl NexusActor for MediaPluginActor {
                                 let session_clone = session.clone();
                                 drop(current);
 
-                                let _ = nexus_plugin_input::NativeInputInjector::inject_media_key("PAUSE");
+                                let result = nexus_plugin_input::NativeInputInjector::inject_media_key("PAUSE");
+                                if let Err(error) = result { tracing::warn!("Native media input failed: {error}"); }
                                 self.send_remote_command("PAUSE".into(), None).await;
 
                                 let handoff_msg = serde_json::json!({
@@ -967,4 +1085,11 @@ impl NexusActor for MediaPluginActor {
 
         Ok(())
     }
+}
+
+fn input_status(device_id: DeviceId, result: NexusResult<()>) -> String {
+    match result {
+        Ok(()) => serde_json::json!({"type":"INPUT_STATUS", "ok":true, "device_id":device_id.to_string()}),
+        Err(error) => serde_json::json!({"type":"INPUT_STATUS", "ok":false, "device_id":device_id.to_string(), "message":error.to_string()}),
+    }.to_string()
 }

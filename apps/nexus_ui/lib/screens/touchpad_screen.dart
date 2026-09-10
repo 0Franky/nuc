@@ -16,11 +16,7 @@ class TouchpadRemoteScreen extends StatefulWidget {
 }
 
 class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
-  String get _targetPeerId =>
-      LanSyncService.instance.selectedTargetDeviceId ??
-      (LanSyncService.instance.discoveredPeers.isNotEmpty
-          ? LanSyncService.instance.discoveredPeers.first['id'] as String
-          : "");
+  String get _targetPeerId => LanSyncService.instance.touchpadTargetId;
   bool _gyroPointerActive = false;
   StreamSubscription<GyroscopeEvent>? _gyroSub;
   final Map<int, Offset> _currentPointers = {};
@@ -266,6 +262,7 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
             child: TargetDeviceSelector(
+              selectedDeviceId: _targetPeerId,
               compact: true,
               filterType: 'Desktop',
               title: "Controllo PC Attivo",
@@ -273,6 +270,18 @@ class _TouchpadRemoteScreenState extends State<TouchpadRemoteScreen> {
                 setState(() {});
               },
             ),
+          ),
+
+          ListenableBuilder(
+            listenable: LanSyncService.instance,
+            builder: (context, _) {
+              final error = LanSyncService.instance.inputErrorFor(_targetPeerId);
+              if (error == null) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                child: Text(error, style: const TextStyle(color: NexusTheme.errorRed)),
+              );
+            },
           ),
 
           // Top System Key Bar

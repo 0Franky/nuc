@@ -126,3 +126,14 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# Bundle the actual Rust engine; the Linux app must not silently ship without it.
+set(NEXUS_NATIVE_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/../../../target/release/libnexus_ffi.so")
+if(NOT EXISTS "${NEXUS_NATIVE_LIBRARY}")
+  set(NEXUS_NATIVE_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/../../../target/debug/libnexus_ffi.so")
+endif()
+if(EXISTS "${NEXUS_NATIVE_LIBRARY}")
+  install(FILES "${NEXUS_NATIVE_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+else()
+  message(FATAL_ERROR "Build the Rust engine first: cargo build -p nexus-ffi --release")
+endif()

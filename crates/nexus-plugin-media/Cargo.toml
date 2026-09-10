@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 nexus-types = { workspace = true }
+nexus-crypto = { workspace = true }
 nexus-protocol = { workspace = true }
 nexus-actor-system = { workspace = true }
 nexus-plugin-input = { workspace = true }

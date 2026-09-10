@@ -58,6 +58,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        android.system.Os.setenv("NEXUS_CONFIG_DIR", filesDir.resolve("nexus").absolutePath, true)
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
         methodChannel = channel
 
