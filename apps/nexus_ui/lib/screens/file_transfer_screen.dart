@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import '../models/transfer_item.dart';
 import '../services/lan_sync_service.dart';
 import '../services/logger_service.dart';
 import '../services/nexus_ffi_bridge.dart';
@@ -18,11 +19,82 @@ class FileTransferScreen extends StatefulWidget {
 }
 
 class _FileTransferScreenState extends State<FileTransferScreen> {
-  final List<Map<String, dynamic>> _transfers = [];
+  /// Immutable list of immutable items: every update replaces the list.
+  List<TransferItem> _transfers = const [];
   StreamSubscription<Map<String, dynamic>>? _offerSub;
   StreamSubscription<Map<String, dynamic>>? _progressSub;
   StreamSubscription<Map<String, dynamic>>? _receivedSub;
   final TextEditingController _manualPathCtrl = TextEditingController();
+  static const int _maxTransfers = 50;
+  DateTime _lastProgressRebuild = DateTime.fromMillisecondsSinceEpoch(0);
+
+  static String _formatBytes(int bytes) {
+    const kb = 1024;
+    const mb = kb * 1024;
+    const gb = mb * 1024;
+    if (bytes >= gb) return '${(bytes / gb).toStringAsFixed(1)} GB';
+    if (bytes >= mb) return '${(bytes / mb).toStringAsFixed(1)} MB';
+    if (bytes >= kb) return '${(bytes / kb).toStringAsFixed(1)} KB';
+    return '$bytes B';
+  }
+
+  void _insertTransfer(TransferItem entry) {
+    final next = <TransferItem>[entry, ..._transfers];
+    _transfers = List.unmodifiable(
+      next.length > _maxTransfers ? next.sublist(0, _maxTransfers) : next,
+    );
+  }
+
+  /// Replaces the first item with [fileId] by a copy produced by [update].
+  void _updateTransfer(String fileId, TransferItem Function(TransferItem) update) {
+    final idx = _transfers.indexWhere((t) => t.fileId == fileId);
+    if (idx < 0) return;
+    final next = List<TransferItem>.of(_transfers);
+    next[idx] = update(next[idx]);
+    _transfers = List.unmodifiable(next);
+  }
+
+  void _removeTransfer(String fileId) {
+    _transfers = List.unmodifiable(_transfers.where((t) => t.fileId != fileId));
+  }
+
+  TransferItem _incomingEntry(String fileId, Map<String, dynamic> json) {
+    final rawSize = json['file_size'];
+    return TransferItem(
+      fileId: fileId,
+      name: json['file_name']?.toString() ?? 'file',
+      size: _formatBytes(rawSize is num ? rawSize.toInt() : 0),
+      progress: 0.0,
+      speed: 'Connessione P2P...',
+      eta: '',
+      peer: json['sender_device']?.toString() ?? 'Dispositivo Remoto',
+      status: 'In ricezione...',
+      icon: Icons.downloading_rounded,
+      color: NexusTheme.successGreen,
+    );
+  }
+
+  /// Rebuild at most every 150 ms while progress events flow.
+  void _setStateThrottled(double progress, VoidCallback fn) {
+    final now = DateTime.now();
+    if (progress >= 1.0 || now.difference(_lastProgressRebuild) >= const Duration(milliseconds: 150)) {
+      _lastProgressRebuild = now;
+      setState(fn);
+    } else {
+      fn();
+    }
+  }
+
+  void _onStreamError(String stream, Object error) {
+    NexusLogger.log('FILE_TRANSFER', 'Errore stream $stream: $error');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: NexusTheme.errorRed,
+        content: Text('Errore aggiornamento trasferimenti ($stream)'),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -34,27 +106,28 @@ class _FileTransferScreenState extends State<FileTransferScreen> {
       final fileName = json['file_name'] as String? ?? 'file';
       final fileSize = (json['file_size'] as num?)?.toInt() ?? 0;
       final sender = json['sender_device'] as String? ?? 'Dispositivo Remoto';
-      final sizeLabel = fileSize > 1024 * 1024
-          ? '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB'
-          : '${(fileSize / 1024).toStringAsFixed(1)} KB';
+      if (fileId.isEmpty) {
+        NexusLogger.log('FILE_TRANSFER', 'Offerta file senza file_id ignorata');
+        return;
+      }
+      final sizeLabel = _formatBytes(fileSize);
 
       setState(() {
-        _transfers.removeWhere((t) => t['file_id'] == fileId);
-        _transfers.insert(0, {
-          'file_id': fileId,
-          'name': fileName,
-          'size': sizeLabel,
-          'progress': 0.0,
-          'speed': 'Connessione P2P...',
-          'eta': 'Ricezione blocchi 64KB...',
-          'peer': sender,
-          'status': 'In ricezione...',
-          'icon': Icons.downloading_rounded,
-          'color': NexusTheme.successGreen,
-        });
+        _removeTransfer(fileId);
+        _insertTransfer(TransferItem(
+          fileId: fileId,
+          name: fileName,
+          size: sizeLabel,
+          progress: 0.0,
+          speed: 'Connessione P2P...',
+          eta: 'Ricezione blocchi 64KB...',
+          peer: sender,
+          status: 'In ricezione...',
+          icon: Icons.downloading_rounded,
+          color: NexusTheme.successGreen,
+        ));
       });
 
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: NexusTheme.accentIndigo,
@@ -62,44 +135,69 @@ class _FileTransferScreenState extends State<FileTransferScreen> {
           duration: const Duration(seconds: 3),
         ),
       );
-    });
+    }, onError: (Object e) => _onStreamError('offerte', e));
 
     _progressSub = LanSyncService.instance.onFileProgress.listen((json) {
       if (!mounted) return;
       final fileId = json['file_id'] as String? ?? '';
-      final progress = (json['progress'] as num?)?.toDouble() ?? 0.0;
-      final speed = json['speed'] as String? ?? '0 MB/s';
-      final receivedChunks = json['received_chunks'] as int? ?? 0;
-      final totalChunks = json['total_chunks'] as int? ?? 1;
+      if (fileId.isEmpty) {
+        NexusLogger.log('FILE_TRANSFER', 'Progresso file senza file_id ignorato');
+        return;
+      }
+      final progress = ((json['progress'] as num?)?.toDouble() ?? 0.0).clamp(0.0, 1.0).toDouble();
+      final speed = json['speed']?.toString() ?? '0 MB/s';
+      final receivedChunks = (json['received_chunks'] as num?)?.toInt() ?? 0;
+      final totalChunks = (json['total_chunks'] as num?)?.toInt() ?? 1;
+      final isKnown = _transfers.any((t) => t.fileId == fileId);
 
-      setState(() {
-        final idx = _transfers.indexWhere((t) => t['file_id'] == fileId);
-        if (idx != -1) {
-          _transfers[idx]['progress'] = progress;
-          _transfers[idx]['speed'] = speed;
-          _transfers[idx]['eta'] = '$receivedChunks / $totalChunks blocchi ($speed)';
+      void apply() {
+        if (!_transfers.any((t) => t.fileId == fileId)) {
+          _insertTransfer(_incomingEntry(fileId, json));
         }
-      });
-    });
+        _updateTransfer(
+          fileId,
+          (t) => t.copyWith(
+            progress: progress,
+            speed: speed,
+            eta: '$receivedChunks / $totalChunks blocchi ($speed)',
+          ),
+        );
+      }
+
+      if (isKnown) {
+        _setStateThrottled(progress, apply);
+      } else {
+        setState(apply);
+      }
+    }, onError: (Object e) => _onStreamError('progresso', e));
 
     _receivedSub = LanSyncService.instance.onFileReceived.listen((json) {
       if (!mounted) return;
       final fileId = json['file_id'] as String? ?? '';
+      if (fileId.isEmpty) {
+        NexusLogger.log('FILE_TRANSFER', 'Completamento file senza file_id ignorato');
+        return;
+      }
       final savedPath = json['saved_path'] as String? ?? '';
+      final hashOk = json['hash_ok'] == true;
 
       setState(() {
-        final idx = _transfers.indexWhere((t) => t['file_id'] == fileId);
-        if (idx != -1) {
-          _transfers[idx]['progress'] = 1.0;
-          _transfers[idx]['status'] = 'Completato';
-          _transfers[idx]['speed'] = 'BLAKE3 Verificato al 100%';
-          _transfers[idx]['eta'] = 'Salvato: $savedPath';
-          _transfers[idx]['icon'] = Icons.check_circle_rounded;
-          _transfers[idx]['color'] = NexusTheme.successGreen;
+        if (!_transfers.any((t) => t.fileId == fileId)) {
+          _insertTransfer(_incomingEntry(fileId, json));
         }
+        _updateTransfer(
+          fileId,
+          (t) => t.copyWith(
+            progress: 1.0,
+            status: 'Completato',
+            speed: hashOk ? 'Integrità BLAKE3 verificata' : 'Ricezione completata',
+            eta: 'Salvato: $savedPath',
+            icon: Icons.check_circle_rounded,
+            color: NexusTheme.successGreen,
+          ),
+        );
       });
 
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: NexusTheme.successGreen,
@@ -107,7 +205,7 @@ class _FileTransferScreenState extends State<FileTransferScreen> {
           duration: const Duration(seconds: 5),
         ),
       );
-    });
+    }, onError: (Object e) => _onStreamError('ricezione', e));
   }
 
   @override
@@ -181,9 +279,7 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
   }
 
   Future<void> _streamRealFile(String filePath, String name, int sizeBytes) async {
-    final sizeLabel = sizeBytes > 1024 * 1024
-        ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'
-        : '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+    final sizeLabel = _formatBytes(sizeBytes);
 
     final targetPeer = LanSyncService.instance.selectedTargetPeer;
     final targetPeerId = LanSyncService.instance.selectedTargetDeviceId;
@@ -192,21 +288,21 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     final offer = NexusFfiBridge.instance.offerFileTransfer(name, sizeBytes, targetPeerId: targetPeerId);
     final fileId = offer['file_id']?.toString() ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
 
-    final transferEntry = {
-      'file_id': fileId,
-      'name': name,
-      'size': sizeLabel,
-      'progress': 0.0,
-      'speed': 'Inizializzazione blocchi 64KB...',
-      'eta': 'Avvio streaming P2P...',
-      'peer': targetDevice,
-      'status': 'In invio...',
-      'icon': Icons.upload_file_rounded,
-      'color': NexusTheme.accentIndigo,
-    };
+    final transferEntry = TransferItem(
+      fileId: fileId,
+      name: name,
+      size: sizeLabel,
+      progress: 0.0,
+      speed: 'Inizializzazione blocchi 64KB...',
+      eta: 'Avvio streaming P2P...',
+      peer: targetDevice,
+      status: 'In invio...',
+      icon: Icons.upload_file_rounded,
+      color: NexusTheme.accentIndigo,
+    );
 
     setState(() {
-      _transfers.insert(0, transferEntry);
+      _insertTransfer(transferEntry);
     });
 
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -220,46 +316,59 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         name,
         onProgress: (progress, speed) {
           if (!mounted) return;
-          setState(() {
-            transferEntry['progress'] = progress;
-            transferEntry['speed'] = speed;
-            transferEntry['eta'] = '${(progress * 100).toInt()}% • Streaming ChaCha20';
+          final p = progress.clamp(0.0, 1.0).toDouble();
+          _setStateThrottled(p, () {
+            _updateTransfer(
+              fileId,
+              (t) => t.copyWith(progress: p, speed: speed, eta: '${(p * 100).toInt()}% inviato'),
+            );
           });
         },
       );
 
       if (mounted) {
         setState(() {
-          transferEntry['progress'] = 1.0;
-          transferEntry['status'] = 'Completato';
-          transferEntry['speed'] = 'Trasferimento riuscito';
-          transferEntry['eta'] = 'BLAKE3 Verificato • 100% Inviato';
-          transferEntry['icon'] = Icons.check_circle_rounded;
-          transferEntry['color'] = NexusTheme.successGreen;
+          _updateTransfer(
+            fileId,
+            (t) => t.copyWith(
+              progress: 1.0,
+              status: 'Completato',
+              speed: 'Trasferimento riuscito',
+              eta: '100% inviato',
+              icon: Icons.check_circle_rounded,
+              color: NexusTheme.successGreen,
+            ),
+          );
         });
 
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: NexusTheme.successGreen,
-            content: Text('✅ File $name inviato con successo ad Android!'),
+            content: Text('✅ File $name inviato a $targetDevice'),
           ),
         );
       }
-    } catch (e) {
+    } catch (e, st) {
+      NexusLogger.log('FILE_TRANSFER', 'Invio di $name fallito: $e\n$st');
       if (mounted) {
         setState(() {
-          transferEntry['status'] = 'Fallito';
-          transferEntry['speed'] = 'Errore';
-          transferEntry['eta'] = e.toString();
-          transferEntry['color'] = NexusTheme.errorRed;
+          _updateTransfer(
+            fileId,
+            (t) => t.copyWith(
+              status: 'Fallito',
+              speed: 'Errore',
+              eta: 'Invio non riuscito',
+              color: NexusTheme.errorRed,
+            ),
+          );
         });
 
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: NexusTheme.errorRed,
-            content: Text('Errore durante il trasferimento: $e'),
+            content: Text('Invio di $name non riuscito. Verifica la connessione con $targetDevice e riprova.'),
           ),
         );
       }
@@ -432,17 +541,17 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             )
           else
             ..._transfers.map((t) {
-              final progress = (t['progress'] as num).toDouble();
+              final progress = t.progress;
               final isDone = progress >= 1.0;
-              final fileId = t['file_id'] as String;
+              final fileId = t.fileId;
 
               return Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: NexusCard(
-                  title: t['name'] as String,
-                  subtitle: '${t['size']} • verso/da ${t['peer']}',
-                  icon: t['icon'] as IconData,
-                  iconColor: t['color'] as Color,
+                  title: t.name,
+                  subtitle: '${t.size} • verso/da ${t.peer}',
+                  icon: t.icon,
+                  iconColor: t.color,
                   trailing: NexusPill(
                     label: isDone ? 'Completato' : '${(progress * 100).toInt()}%',
                     style: isDone ? NexusPillStyle.success : NexusPillStyle.accent,
@@ -464,10 +573,10 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(t['speed'] as String, style: const TextStyle(fontSize: 11, color: NexusTheme.textSecondary)),
+                          Text(t.speed, style: const TextStyle(fontSize: 11, color: NexusTheme.textSecondary)),
                           Expanded(
                             child: Text(
-                              t['eta'] as String,
+                              t.eta,
                               textAlign: TextAlign.end,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
@@ -479,7 +588,7 @@ if (\$dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                           ),
                         ],
                       ),
-                      if (!isDone && (t['status'] == 'Fallito' || progress > 0.0)) ...[
+                      if (!isDone && (t.status == 'Fallito' || progress > 0.0)) ...[
                         const SizedBox(height: 8),
                         Align(
                           alignment: Alignment.centerRight,

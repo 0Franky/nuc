@@ -33,23 +33,44 @@ export 'widgets/nexus_media_card.dart';
 export 'widgets/nexus_audio_card.dart';
 export 'widgets/nexus_continuity_island.dart';
 
+/// Runs a startup task (sync or async) so that failures reach the log
+/// instead of becoming unhandled errors.
+void _launchGuarded(String tag, FutureOr<void> Function() task) {
+  try {
+    final result = task();
+    if (result is Future<void>) {
+      unawaited(result.then<void>((_) {}, onError: (Object e, StackTrace st) {
+        NexusLogger.log("INIT", "$tag failed: $e");
+      }));
+    }
+  } catch (e) {
+    NexusLogger.log("INIT", "$tag failed: $e");
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await LanSyncService.instance.loadSettings();
+  try {
+    await LanSyncService.instance.loadSettings();
+  } catch (e) {
+    // Corrupted or unreadable settings must not keep the app on a blank screen.
+    NexusLogger.log("INIT", "Settings load failed, using defaults: $e");
+  }
   try {
     final id = NexusFfiBridge.instance.init(LanSyncService.instance.deviceName);
     await LanSyncService.instance.adoptNativeIdentity(id);
   } catch (e) {
     NexusLogger.log("INIT", "Native FFI init non-fatal: $e");
   }
-  LanSyncService.instance.start();
+  _launchGuarded("LanSyncService.start", () => LanSyncService.instance.start());
   unawaited(SharedInputService.instance.initialize(LanSyncService.instance));
   runApp(const NexusApp());
-  SystemTrayService.instance.init();
+  _launchGuarded("SystemTrayService.init", () => SystemTrayService.instance.init());
 
   // Request all platform permissions asynchronously after app launch
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    NexusPermissionService.instance.requestAllPermissions();
+    _launchGuarded("requestAllPermissions",
+        () => NexusPermissionService.instance.requestAllPermissions());
   });
 }
 
@@ -76,6 +97,45 @@ class MainNavigationShell extends StatefulWidget {
 
 class _MainNavigationShellState extends State<MainNavigationShell> {
   int _selectedIndex = 0;
+  int _notifCount = 0;
+
+  // Keeps the IndexedStack (and the state of every tab) alive when the
+  // layout switches between desktop rail and mobile bar on resize.
+  final GlobalKey _bodyKey = GlobalKey(debugLabel: 'nexus-tabs');
+
+  Widget _buildBody(List<Widget> screens) =>
+      IndexedStack(key: _bodyKey, index: _selectedIndex, children: screens);
+
+  // Built once: not recreated on every build or LayoutBuilder resize.
+  late final List<Widget> _screens = [
+    DashboardScreen(onNavigateTab: _onSelectTab),
+    const NotificationCenterScreen(),
+    const SpatialTopologyScreen(),
+    const FileTransferScreen(),
+    const TouchpadRemoteScreen(),
+    const ClipboardScreen(),
+    const SettingsScreen(),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _notifCount = LanSyncService.instance.notifications.length;
+    LanSyncService.instance.addListener(_onSyncChanged);
+  }
+
+  @override
+  void dispose() {
+    LanSyncService.instance.removeListener(_onSyncChanged);
+    super.dispose();
+  }
+
+  void _onSyncChanged() {
+    final count = LanSyncService.instance.notifications.length;
+    if (mounted && count != _notifCount) {
+      setState(() => _notifCount = count);
+    }
+  }
 
   void _onSelectTab(int index) {
     setState(() => _selectedIndex = index);
@@ -83,17 +143,8 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
 
   @override
   Widget build(BuildContext context) {
-    final screens = [
-      DashboardScreen(onNavigateTab: _onSelectTab),
-      const NotificationCenterScreen(),
-      const SpatialTopologyScreen(),
-      const FileTransferScreen(),
-      const TouchpadRemoteScreen(),
-      const ClipboardScreen(),
-      const SettingsScreen(),
-    ];
-
-    final notifCount = LanSyncService.instance.notifications.length;
+    final screens = _screens;
+    final notifCount = _notifCount;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -140,35 +191,16 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
                       ),
                       label: const Text('Notifiche', style: TextStyle(fontSize: 11)),
                     ),
-                    const NavigationRailDestination(
-                      icon: Icon(Icons.devices_outlined),
-                      selectedIcon: Icon(Icons.devices_other_rounded, color: NexusTheme.accentIndigo),
-                      label: Text('Schermi', style: TextStyle(fontSize: 11)),
-                    ),
-                    const NavigationRailDestination(
-                      icon: Icon(Icons.folder_outlined),
-                      selectedIcon: Icon(Icons.folder_shared_rounded, color: NexusTheme.accentIndigo),
-                      label: Text('File Drop', style: TextStyle(fontSize: 11)),
-                    ),
-                    const NavigationRailDestination(
-                      icon: Icon(Icons.touch_app_outlined),
-                      selectedIcon: Icon(Icons.touch_app_rounded, color: NexusTheme.accentIndigo),
-                      label: Text('Trackpad', style: TextStyle(fontSize: 11)),
-                    ),
-                    const NavigationRailDestination(
-                      icon: Icon(Icons.content_paste_outlined),
-                      selectedIcon: Icon(Icons.content_paste_rounded, color: NexusTheme.accentIndigo),
-                      label: Text('Appunti', style: TextStyle(fontSize: 11)),
-                    ),
-                    const NavigationRailDestination(
-                      icon: Icon(Icons.settings_outlined),
-                      selectedIcon: Icon(Icons.settings_rounded, color: NexusTheme.accentIndigo),
-                      label: Text('Impostazioni', style: TextStyle(fontSize: 11)),
-                    ),
+                    for (final item in _sharedNavItems)
+                      NavigationRailDestination(
+                        icon: Icon(item.icon),
+                        selectedIcon: Icon(item.selectedIcon, color: NexusTheme.accentIndigo),
+                        label: Text(item.label, style: const TextStyle(fontSize: 11)),
+                      ),
                   ],
                 ),
                 const VerticalDivider(thickness: 1, width: 1),
-                Expanded(child: screens[_selectedIndex]),
+                Expanded(child: _buildBody(screens)),
               ],
             ),
           );
@@ -176,7 +208,7 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
 
         // iOS / Mobile Layout: Sleek bottom NavigationBar
         return Scaffold(
-          body: screens[_selectedIndex],
+          body: _buildBody(screens),
           bottomNavigationBar: NavigationBar(
             backgroundColor: NexusTheme.surfaceSecondary,
             indicatorColor: NexusTheme.accentIndigo.withAlpha(50),
@@ -202,31 +234,12 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
                 ),
                 label: 'Notifiche',
               ),
-              const NavigationDestination(
-                icon: Icon(Icons.devices_outlined),
-                selectedIcon: Icon(Icons.devices_other_rounded, color: NexusTheme.accentIndigo),
-                label: 'Schermi',
-              ),
-              const NavigationDestination(
-                icon: Icon(Icons.folder_outlined),
-                selectedIcon: Icon(Icons.folder_shared_rounded, color: NexusTheme.accentIndigo),
-                label: 'File Drop',
-              ),
-              const NavigationDestination(
-                icon: Icon(Icons.touch_app_outlined),
-                selectedIcon: Icon(Icons.touch_app_rounded, color: NexusTheme.accentIndigo),
-                label: 'Trackpad',
-              ),
-              const NavigationDestination(
-                icon: Icon(Icons.content_paste_outlined),
-                selectedIcon: Icon(Icons.content_paste_rounded, color: NexusTheme.accentIndigo),
-                label: 'Appunti',
-              ),
-              const NavigationDestination(
-                icon: Icon(Icons.settings_outlined),
-                selectedIcon: Icon(Icons.settings_rounded, color: NexusTheme.accentIndigo),
-                label: 'Impostazioni',
-              ),
+              for (final item in _sharedNavItems)
+                NavigationDestination(
+                  icon: Icon(item.icon),
+                  selectedIcon: Icon(item.selectedIcon, color: NexusTheme.accentIndigo),
+                  label: item.label,
+                ),
             ],
           ),
         );
@@ -234,3 +247,22 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
     );
   }
 }
+
+/// Destinazione di navigazione condivisa da NavigationRail (desktop) e
+/// NavigationBar (mobile), per evitare che le due liste divergano.
+class _NavItem {
+  const _NavItem(this.icon, this.selectedIcon, this.label);
+  final IconData icon;
+  final IconData selectedIcon;
+  final String label;
+}
+
+/// Destinazioni successive a Dashboard e Notifiche (quest'ultima ha il badge
+/// e resta definita a parte). L'ordine deve seguire quello di `screens`.
+const List<_NavItem> _sharedNavItems = [
+  _NavItem(Icons.devices_outlined, Icons.devices_other_rounded, 'Schermi'),
+  _NavItem(Icons.folder_outlined, Icons.folder_shared_rounded, 'File Drop'),
+  _NavItem(Icons.touch_app_outlined, Icons.touch_app_rounded, 'Trackpad'),
+  _NavItem(Icons.content_paste_outlined, Icons.content_paste_rounded, 'Appunti'),
+  _NavItem(Icons.settings_outlined, Icons.settings_rounded, 'Impostazioni'),
+];

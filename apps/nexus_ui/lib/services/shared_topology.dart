@@ -68,9 +68,27 @@ class SharedTopology {
   SharedTopology move(String localId, String target, Offset relative) {
     final origin = points[localId];
     if (origin == null) throw StateError('Dispositivo assente dalla topologia');
+    // Same limits enforced by parse(): otherwise peers would reject the
+    // serialized result and the replicas would diverge.
+    if (target.isEmpty || target.length > 128 || target == 'self') {
+      throw ArgumentError.value(target, 'target', 'Id dispositivo non valido');
+    }
+    if (!points.containsKey(target) && points.length >= 128) {
+      throw StateError('Topologia piena');
+    }
+    if (revision >= 9007199254740990) {
+      throw StateError('Revisione della topologia esaurita');
+    }
+    final next = origin + relative;
+    if (!next.dx.isFinite ||
+        !next.dy.isFinite ||
+        next.dx.abs() > 1000000 ||
+        next.dy.abs() > 1000000) {
+      throw ArgumentError.value(relative, 'relative', 'Posizione fuori limite');
+    }
     return SharedTopology(revision + 1, localId, {
       ...points,
-      target: origin + relative,
+      target: next,
     });
   }
 }

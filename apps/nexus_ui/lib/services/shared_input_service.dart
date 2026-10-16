@@ -33,12 +33,17 @@ class SharedInputService extends ChangeNotifier {
   final Map<String, String> trusted = {};
   String _lastConfig = '';
   final List<String> diagnostics = [];
+  final Map<int, String> _clientStatuses = {};
+  int get backendClientCount => _clientStatuses.length;
   String _published = '';
   String get diagnosticReport =>
       'Sistema: ${Platform.operatingSystem}\n'
       'Sessione: ${Platform.environment['XDG_SESSION_TYPE'] ?? 'desktop'}\n'
       'Motore: ${running ? 'connesso' : 'fermo'}\n'
+      'Condivisione abilitata: $enabled; operazione in corso: $busy\n'
       'Cattura locale: $captureReady\nRicezione locale: $emulationReady\n'
+      'Destinazioni nel motore: $backendClientCount\n'
+      '${_clientStatuses.values.join('\n')}\n'
       'Stato: $status\n${diagnostics.join('\n')}';
 
   void _diagnostic(String message) {
@@ -49,7 +54,15 @@ class SharedInputService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _writes = Future.value();
+  // All lifecycle changes and configuration writes share one queue. In
+  // particular, an old IPC shutdown must finish before a new engine starts.
+  Future<void> _operations = Future.value();
+  Future<void> _serialize(Future<void> Function() operation) {
+    final next = _operations.then((_) => operation());
+    _operations = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return next;
+  }
+
   Directory? _directory;
   bool get supported => Platform.isWindows || Platform.isLinux;
   bool get running => _process != null && _ipc != null;
@@ -68,7 +81,9 @@ class SharedInputService extends ChangeNotifier {
           ? 'Emulazione pronta; cattura mouse e tastiera non disponibile in X11'
           : !captureReady || !emulationReady
           ? 'Cattura locale: ${captureReady ? 'pronta' : 'non pronta'} • Ricezione: ${emulationReady ? 'pronta' : 'non pronta'}. Su Linux completa il consenso del desktop.'
-          : 'Mouse e tastiera pronti • Ctrl + Alt + Shift + Win/Super per tornare in locale');
+          : _clientStatuses.isEmpty
+          ? 'Ricezione pronta; nessun PC destinatario nel motore'
+          : 'Backend locale pronto • Ctrl + Alt + Shift + Win/Super per tornare in locale');
 
   Future<void> initialize(LanSyncService lan) async {
     if (_lan != null || !supported) return;
@@ -90,16 +105,21 @@ class SharedInputService extends ChangeNotifier {
 
   void _scheduleConfig() {
     if (!running) return;
+    final child = _process;
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 250), () {
-      _writes = _writes.then((_) => _writeConfig()).catchError((
-        Object e,
-      ) async {
-        await _stop();
-        enabled = false;
-        error = 'Configurazione input: $e';
-        notifyListeners();
-      });
+      unawaited(
+        _serialize(() async {
+          if (!identical(_process, child) || !running) return;
+          try {
+            await _writeConfig();
+          } catch (e) {
+            await _stop();
+            error = 'Configurazione input: $e';
+            notifyListeners();
+          }
+        }),
+      );
     });
   }
 
@@ -266,7 +286,10 @@ class SharedInputService extends ChangeNotifier {
   Future<void> _saveTrust() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('shared_input_trusted', jsonEncode(trusted));
-    if (running) await setEnabled(true);
+    await _serialize(() async {
+      // Re-check after pending requests: authorization must not undo a disable.
+      if (enabled && running) await _setEnabled(true);
+    });
     notifyListeners();
   }
 
@@ -285,8 +308,12 @@ class SharedInputService extends ChangeNotifier {
           timeout: const Duration(milliseconds: 250),
         );
 
-  Future<void> setEnabled(bool value) async {
-    if (busy || !supported || _lan == null) return;
+  Future<void> setEnabled(bool value) {
+    if (!supported || _lan == null) return Future.value();
+    return _serialize(() => _setEnabled(value));
+  }
+
+  Future<void> _setEnabled(bool value) async {
     busy = true;
     error = null;
     notifyListeners();
@@ -359,6 +386,7 @@ class SharedInputService extends ChangeNotifier {
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .listen((line) {
+            if (!identical(_process, child)) return;
             if (line.contains('ERROR') || line.contains('WARN')) {
               NexusLogger.log('INPUT_BACKEND', line);
               _diagnostic(line);
@@ -372,6 +400,7 @@ class SharedInputService extends ChangeNotifier {
           _ipc?.destroy();
           _ipc = null;
           captureReady = emulationReady = false;
+          _clientStatuses.clear();
           enabled = false;
           _lan!.universalControlActive = false;
           _publish(null);
@@ -385,7 +414,12 @@ class SharedInputService extends ChangeNotifier {
           identical(_process, child) &&
           DateTime.now().isBefore(deadline)) {
         try {
-          _ipc = await _connectIpc();
+          final connected = await _connectIpc();
+          if (!identical(_process, child)) {
+            connected.destroy();
+            break;
+          }
+          _ipc = connected;
         } on SocketException {
           await Future<void>.delayed(const Duration(milliseconds: 100));
         }
@@ -397,7 +431,9 @@ class SharedInputService extends ChangeNotifier {
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .listen(
-            _event,
+            (line) {
+              if (identical(_ipc, ipc)) _event(line);
+            },
             onError: (Object e) => unawaited(
               _ipcLost(ipc, 'Connessione al backend interrotta: $e'),
             ),
@@ -418,19 +454,28 @@ class SharedInputService extends ChangeNotifier {
     }
   }
 
-  Future<void> _ipcLost(Socket socket, String message) async {
+  Future<void> _ipcLost(Socket socket, String message) => _serialize(() async {
+    // Test identity when this operation runs, not before waiting in the queue.
     if (!identical(_ipc, socket)) return;
     await _stop();
-    enabled = false;
-    _lan!.universalControlActive = false;
     error = message;
     notifyListeners();
-  }
+  });
 
   void _event(String line) {
     try {
       final event = jsonDecode(line);
       if (event is! Map) return;
+      if (event['Enumerate'] is List) {
+        _clientStatuses.clear();
+        for (final client in event['Enumerate'] as List) {
+          _recordClient(client);
+        }
+      }
+      for (final key in ['Created', 'State']) {
+        if (event[key] != null) _recordClient(event[key]);
+      }
+      if (event['Deleted'] is int) _clientStatuses.remove(event['Deleted']);
       if (event['CaptureStatus'] != null) {
         captureReady = event['CaptureStatus'] == 'Enabled';
       }
@@ -460,14 +505,28 @@ class SharedInputService extends ChangeNotifier {
         _diagnostic('Cattura: $captureReady; ricezione: $emulationReady');
         if (fingerprint != null) _publish(fingerprint);
       }
-      if (captureReady && emulationReady && event['Error'] == null) {
-        error = null;
-      }
+      // A state snapshot is not evidence that a previous error recovered.
+      // Keep the error visible until an explicit restart resets this session.
       notifyListeners();
     } catch (_) {
       error = 'Risposta non valida dal backend input';
       notifyListeners();
     }
+  }
+
+  void _recordClient(dynamic client) {
+    if (client is! List ||
+        client.length != 3 ||
+        client[0] is! int ||
+        client[1] is! Map ||
+        client[2] is! Map) {
+      return;
+    }
+    final config = client[1] as Map;
+    final state = client[2] as Map;
+    _clientStatuses[client[0] as int] =
+        'Bordo: ${config['position']} • Attivo: ${state['active'] == true} • '
+        'Raggiungibile: ${state['alive'] == true}';
   }
 
   void _publish(String? value) {
@@ -489,7 +548,8 @@ class SharedInputService extends ChangeNotifier {
 
   Future<void> shutdown() async {
     _lan?.removeListener(_scheduleConfig);
-    await _stop();
+    await _serialize(_stop);
+    notifyListeners();
   }
 
   Future<void> _stop() async {
@@ -499,9 +559,16 @@ class SharedInputService extends ChangeNotifier {
     _ipc = null;
     final child = _process;
     _process = null;
+    enabled = false;
+    _clientStatuses.clear();
+    captureReady = emulationReady = false;
+    if (_lan != null) {
+      _lan!.universalControlActive = false;
+      _publish(null);
+    }
     if (child != null) {
       try {
-        await child.stdin.close();
+        await child.stdin.close().timeout(const Duration(seconds: 1));
       } catch (_) {
         /* process already exited */
       }
@@ -509,9 +576,8 @@ class SharedInputService extends ChangeNotifier {
         await child.exitCode.timeout(const Duration(seconds: 2));
       } on TimeoutException {
         child.kill(ProcessSignal.sigkill);
+        await child.exitCode.timeout(const Duration(seconds: 2));
       }
     }
-    captureReady = emulationReady = false;
-    if (_lan != null) _publish(null);
   }
 }

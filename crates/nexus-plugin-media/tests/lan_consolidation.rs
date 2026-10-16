@@ -96,14 +96,68 @@ async fn websocket_snapshot_routing_rename_disconnect_and_linux_input() {
         "{location}"
     );
     // Real backend error is returned over the same network connection.
+    // Changing DISPLAY cannot invalidate the native injector's cached X11 connection.
+    // Keyboard commands use a new xdotool process, so a missing display is
+    // a deterministic backend error and cannot generate any input event.
     std::env::set_var("DISPLAY", "invalid-display");
     send(
         &mut b,
-        json!({"type":"TOUCHPAD_DELTA","target_device_id":host.to_string(),"dx":1,"dy":1}),
+        json!({"type":"KEYBOARD_KEY","target_device_id":host.to_string(),"key":"Enter"}),
     )
     .await;
     assert_eq!(receive(&mut b, "INPUT_STATUS").await["ok"], false);
     a.close(None).await.unwrap();
     assert_eq!(receive(&mut b, "PEER_DISCONNECTED").await["id"], a_id);
     b.close(None).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "Requires an isolated network namespace and private XDG_CONFIG_HOME; no input is injected"]
+async fn optional_input_metadata_survives_relay_and_reconnection() {
+    let host = DeviceId::new_random();
+    let (bus, _commands) = EventBus::new(128, 128);
+    ActorSupervisor::spawn_actor(MediaPluginActor::new(host).with_device_name("Router".into()), bus);
+    let mut peer = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok((socket, _)) = connect_async("ws://127.0.0.1:28471/media").await { break socket; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    receive(&mut peer, "PEER_ANNOUNCE").await;
+    let id = DeviceId::new_random().to_string();
+    let ready = json!({"fingerprint":"test-identity", "emulation_ready":true, "capture_ready":true, "port":4243});
+    send(&mut peer, json!({"type":"PEER_ANNOUNCE", "id":id, "name":"Linux", "os":"linux", "shared_input":ready})).await;
+    assert_eq!(receive(&mut peer, "PEER_ANNOUNCE").await["shared_input"], ready);
+    send(&mut peer, json!({"type":"PEER_METADATA", "id":id, "name":"Linux Renamed", "os":"linux"})).await;
+    let relayed = receive(&mut peer, "PEER_ANNOUNCE").await;
+    assert!(relayed.get("shared_input").is_none(), "Absent metadata must not become a destructive null: {relayed}");
+    let (mut observer, _) = connect_async("ws://127.0.0.1:28471/media").await.unwrap();
+    receive(&mut observer, "PEER_ANNOUNCE").await;
+    let snapshot = receive(&mut observer, "PEER_ANNOUNCE").await;
+    assert_eq!(snapshot["id"], id);
+    assert_eq!(snapshot["shared_input"], ready, "Cached reconnect snapshot must preserve previous metadata");
+    observer.close(None).await.unwrap();
+
+    send(&mut peer, json!({"type":"PEER_METADATA", "id":id, "name":"Linux", "shared_input":null})).await;
+    assert_eq!(receive(&mut peer, "PEER_ANNOUNCE").await.get("shared_input"), Some(&Value::Null));
+    send(&mut peer, json!({"type":"PEER_ANNOUNCE", "id":id, "name":"Linux"})).await;
+    assert!(receive(&mut peer, "PEER_ANNOUNCE").await.get("shared_input").is_none());
+    let (mut observer, _) = connect_async("ws://127.0.0.1:28471/media").await.unwrap();
+    receive(&mut observer, "PEER_ANNOUNCE").await;
+    assert_eq!(receive(&mut observer, "PEER_ANNOUNCE").await.get("shared_input"), Some(&Value::Null));
+    observer.close(None).await.unwrap();
+
+    send(&mut peer, json!({"type":"PEER_METADATA", "id":host.to_string(), "name":"Router", "shared_input":ready})).await;
+    assert_eq!(receive(&mut peer, "PEER_METADATA").await["shared_input"], ready);
+    send(&mut peer, json!({"type":"PEER_METADATA", "id":host.to_string(), "name":"Router Renamed"})).await;
+    assert!(receive(&mut peer, "PEER_METADATA").await.get("shared_input").is_none());
+    let (mut observer, _) = connect_async("ws://127.0.0.1:28471/media").await.unwrap();
+    assert_eq!(receive(&mut observer, "PEER_ANNOUNCE").await["shared_input"], ready, "Local rename must not wipe ready state");
+    observer.close(None).await.unwrap();
+    send(&mut peer, json!({"type":"PEER_METADATA", "id":host.to_string(), "name":"Router", "shared_input":null})).await;
+    assert_eq!(receive(&mut peer, "PEER_METADATA").await.get("shared_input"), Some(&Value::Null));
+    let (mut observer, _) = connect_async("ws://127.0.0.1:28471/media").await.unwrap();
+    assert_eq!(receive(&mut observer, "PEER_ANNOUNCE").await.get("shared_input"), Some(&Value::Null));
+    observer.close(None).await.unwrap();
+    peer.close(None).await.unwrap();
 }

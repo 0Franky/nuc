@@ -23,6 +23,38 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
   final List<Map<String, dynamic>> _history = [];
   final TextEditingController _inputCtrl = TextEditingController();
 
+  /// Richieste "Rivela" in attesa di risposta, con il relativo timeout.
+  final Map<String, Timer> _pendingReveals = {};
+  static const Duration _revealTimeout = Duration(seconds: 10);
+
+  void _requestReveal(String entryId) {
+    if (entryId.isEmpty || _pendingReveals.containsKey(entryId)) return;
+    try {
+      LanSyncService.instance.requestSecretReveal(entryId);
+    } catch (e) {
+      debugPrint('[ClipboardScreen] requestSecretReveal fallita: $e');
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('❌ Impossibile inviare la richiesta "Rivela"')),
+      );
+      return;
+    }
+    setState(() {
+      _pendingReveals[entryId] = Timer(_revealTimeout, () {
+        if (!mounted) return;
+        setState(() => _pendingReveals.remove(entryId));
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('⏱️ Nessuna risposta alla richiesta "Rivela": riprova')),
+        );
+      });
+    });
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Richiesta "Rivela" inviata via E2EE...')),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -31,19 +63,22 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
 
     _clipSub = LanSyncService.instance.onClipboardSync.listen((text) {
       if (mounted) {
-        final targetPeer = LanSyncService.instance.selectedTargetPeer;
-        final sender = targetPeer?['name'] as String? ?? 'Dispositivo LAN';
+        // onClipboardSync non fornisce il mittente: selectedTargetPeer e' la
+        // destinazione dell'invio, non chi ha inviato. Attribuzione generica
+        // finche' il servizio non emette i metadati del mittente.
+        const sender = 'Dispositivo LAN';
         setState(() {
           _history.insert(0, {
             'text': text,
             'hint_type': 'Sincronizzato LAN',
-            'source_device': '$sender (LAN)',
+            'source_device': sender,
             'is_locked': false,
           });
+          _trimHistory();
         });
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('📋 Appunti ricevuti da $sender: $text'), duration: const Duration(seconds: 3)),
+          SnackBar(content: Text('📋 Appunti ricevuti da $sender: ${_preview(text)}'), duration: const Duration(seconds: 3)),
         );
       }
     });
@@ -51,6 +86,11 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
     _announceSub = LanSyncService.instance.onSecretAnnounce.listen((json) {
       if (!mounted) return;
       final entryId = json['entry_id'] as String? ?? '';
+      if (entryId.isEmpty) {
+        // Without entry_id the entry could not be revealed or deduplicated.
+        debugPrint('[ClipboardScreen] Annuncio segreto scartato: entry_id mancante');
+        return;
+      }
       final secretType = json['secret_type'] as String? ?? 'Segreto';
       final maskedPreview = json['masked_preview'] as String? ?? '••••••';
       final src = json['source_device'] as String? ?? 'Dispositivo Remoto';
@@ -80,6 +120,7 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
       if (!mounted) return;
       final entryId = json['entry_id'] as String? ?? '';
       final text = json['text'] as String? ?? '';
+      _pendingReveals.remove(entryId)?.cancel();
       setState(() {
         final idx = _history.indexWhere((h) => h['id'] == entryId);
         if (idx != -1) {
@@ -92,7 +133,7 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: NexusTheme.successGreen,
-          content: Text('🔓 Messaggio completo rivelato e copiato negli appunti: $text'),
+          content: const Text('🔓 Segreto rivelato'),
           duration: const Duration(seconds: 4),
         ),
       );
@@ -105,27 +146,59 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
     _clipSub?.cancel();
     _announceSub?.cancel();
     _revealSub?.cancel();
+    for (final t in _pendingReveals.values) {
+      t.cancel();
+    }
+    _pendingReveals.clear();
     _inputCtrl.dispose();
     super.dispose();
+  }
+
+  static const int _maxHistory = 100;
+  static const int _previewLength = 30;
+
+  /// Chiavi (id, oppure testo+timestamp) delle voci FFI gia' acquisite.
+  final Set<String> _seenKeys = {};
+
+  String _historyKey(Map<String, dynamic> item) {
+    final id = item['id']?.toString() ?? '';
+    if (id.isNotEmpty) return 'id:$id';
+    return 'tx:${item['text'] ?? ''}|${item['timestamp'] ?? ''}';
+  }
+
+  void _trimHistory() {
+    if (_history.length > _maxHistory) {
+      _history.removeRange(_maxHistory, _history.length);
+    }
+  }
+
+  static String _preview(String text) {
+    final oneLine = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return oneLine.length <= _previewLength ? oneLine : '${oneLine.substring(0, _previewLength)}…';
   }
 
   void _fetchHistory() {
     final state = NexusFfiBridge.instance.getState();
     final history = (state['clipboard_history'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-    if (mounted && history.isNotEmpty) {
-      setState(() {
-        for (final item in history) {
-          final id = item['id']?.toString() ?? '';
-          final existingIdx = _history.indexWhere((h) => h['id'] == id && id.isNotEmpty);
-          if (existingIdx == -1) {
-            _history.add(item);
-          }
-        }
-      });
+    if (!mounted || history.isEmpty) return;
+    final added = <Map<String, dynamic>>[];
+    for (final item in history) {
+      final id = item['id']?.toString() ?? '';
+      if (!_seenKeys.add(_historyKey(item))) continue;
+      if (id.isNotEmpty && _history.any((h) => h['id'] == id)) continue;
+      added.add(item);
     }
+    if (added.isEmpty) return;
+    setState(() {
+      _history.addAll(added);
+      _trimHistory();
+    });
   }
 
   void _showAddClipDialog(BuildContext context) {
+    // Ogni apertura parte da un campo vuoto: il controller e' condiviso tra le
+    // aperture e il testo lasciato da un Annulla non deve ricomparire.
+    _inputCtrl.clear();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -150,11 +223,22 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
               backgroundColor: NexusTheme.accentIndigo,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
-            onPressed: () {
-              if (_inputCtrl.text.isNotEmpty) {
+            onPressed: () async {
+              if (_inputCtrl.text.trim().isNotEmpty) {
                 final t = _inputCtrl.text;
-                NexusFfiBridge.instance.syncClipboard(t);
-                Clipboard.setData(ClipboardData(text: t));
+                try {
+                  NexusFfiBridge.instance.syncClipboard(t);
+                  await Clipboard.setData(ClipboardData(text: t));
+                } catch (e) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Invio appunti non riuscito: $e')),
+                  );
+                  return;
+                }
+                if (!context.mounted) return;
+                if (!ctx.mounted) return;
                 setState(() {
                   _history.insert(0, {
                     'text': t,
@@ -162,12 +246,13 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
                     'source_device': 'Questo Dispositivo',
                     'is_locked': false,
                   });
+                  _trimHistory();
                 });
                 _inputCtrl.clear();
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).hideCurrentSnackBar();
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Testo inviato via E2EE: $t')),
+                  SnackBar(content: Text('Testo inviato via E2EE: ${_preview(t)}')),
                 );
               }
             },
@@ -195,10 +280,24 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
                 ? 'Zero-Trust Gate: ATTIVO (Segreti e OTP protetti)'
                 : 'Zero-Trust Gate: DISATTIVO (Auto-condividi tutto)',
             onPressed: () {
+              final newValue = !gateActive;
+              // Apply to the FFI core first: update the UI state only if it succeeds,
+              // so that UI and core never diverge.
+              try {
+                NexusFfiBridge.instance.setClipboardPrivacyGate(newValue);
+              } catch (e) {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('❌ Impossibile aggiornare lo Zero-Trust Gate: stato invariato'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+                return;
+              }
               setState(() {
-                LanSyncService.instance.clipboardPrivacyGate = !gateActive;
+                LanSyncService.instance.clipboardPrivacyGate = newValue;
               });
-              NexusFfiBridge.instance.setClipboardPrivacyGate(LanSyncService.instance.clipboardPrivacyGate);
               ScaffoldMessenger.of(context).hideCurrentSnackBar();
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -349,18 +448,18 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                               ),
-                              onPressed: () {
-                                if (entryId.isNotEmpty) {
-                                  LanSyncService.instance.requestSecretReveal(entryId);
-                                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('Richiesta "Rivela" inviata via E2EE...')),
-                                  );
-                                }
-                              },
-                              icon: const Icon(Icons.visibility_rounded, size: 18),
-                              label: const Text(
-                                'Rivela',
+                              onPressed: entryId.isEmpty || _pendingReveals.containsKey(entryId)
+                                  ? null
+                                  : () => _requestReveal(entryId),
+                              icon: _pendingReveals.containsKey(entryId)
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.visibility_rounded, size: 18),
+                              label: Text(
+                                _pendingReveals.containsKey(entryId) ? 'In corso...' : 'Rivela',
                                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                               ),
                             ),
@@ -383,12 +482,22 @@ class _ClipboardScreenState extends State<ClipboardScreen> {
                       icon: Icons.copy_rounded,
                       style: NexusButtonStyle.ghost,
                       height: 32,
-                      onPressed: () {
-                        NexusFfiBridge.instance.syncClipboard(text);
-                        Clipboard.setData(ClipboardData(text: text));
+                      onPressed: () async {
+                        try {
+                          NexusFfiBridge.instance.syncClipboard(text);
+                          await Clipboard.setData(ClipboardData(text: text));
+                        } catch (e) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Sincronizzazione appunti non riuscita: $e')),
+                          );
+                          return;
+                        }
+                        if (!context.mounted) return;
                         ScaffoldMessenger.of(context).hideCurrentSnackBar();
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Appunti sincronizzati: $text')),
+                          SnackBar(content: Text('Appunti sincronizzati: ${_preview(text)}')),
                         );
                       },
                     ),

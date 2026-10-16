@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -17,11 +18,23 @@ class DashboardScreen extends StatefulWidget {
 
   const DashboardScreen({super.key, this.onNavigateTab});
 
+  // Indici delle tab dello shell di navigazione (main.dart).
+  // Tenere allineati all'ordine delle destinazioni in main.dart.
+  static const int _tabNotifications = 1;
+  static const int _tabTopology = 2;
+  static const int _tabFileTransfer = 3;
+  static const int _tabTouchpad = 4;
+  static const int _tabClipboard = 5;
+
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObserver {
+  static const Duration _pollInterval = Duration(milliseconds: 500);
+  static const int _defaultLanPort = 28471;
+  String? _lastStateJson;
+  bool _stateErrorLogged = false;
   Timer? _pollTimer;
   Map<String, dynamic> _engineState = {};
   String? _lastLoggedMediaTitle;
@@ -31,13 +44,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _fetchState();
-    _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _fetchState());
+    _startPolling();
 
     _openUrlSub = LanSyncService.instance.onOpenUrl.listen((data) {
       final url = data['url'] as String? ?? '';
       final title = data['title'] as String? ?? 'Video PC';
-      if (mounted && url.isNotEmpty) {
+      if (mounted && url.isNotEmpty && _isRouteCurrent) {
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -46,19 +60,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
             action: SnackBarAction(
               label: 'APRI ORA',
               textColor: NexusTheme.successGreen,
-              onPressed: () {
-                NexusFfiBridge.instance.sendMediaControl('PAUSE');
-                launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+              onPressed: () async {
+                final opened = await _safeLaunch(url);
+                if (opened) {
+                  NexusFfiBridge.instance.sendMediaControl('PAUSE');
+                }
               },
             ),
             duration: const Duration(seconds: 8),
           ),
         );
       }
+    }, onError: (Object e) {
+      NexusLogger.log('UI', 'onOpenUrl stream error: $e');
     });
 
     _mediaPromptSub = LanSyncService.instance.onMediaHandoffPrompt.listen((data) {
-      if (!mounted) return;
+      if (!mounted || !_isRouteCurrent) return;
       final title = data['title'] as String? ?? 'Video PC';
       final timestampedUrl = data['timestamped_url'] as String? ?? (data['media_url'] as String? ?? '');
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -112,13 +130,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             textColor: NexusTheme.accentIndigo,
             onPressed: () {
               if (timestampedUrl.isNotEmpty) {
-                NexusLogger.log('HANDOFF', 'User confirmed handoff playback on mobile: $timestampedUrl');
-                launchUrl(Uri.parse(timestampedUrl), mode: LaunchMode.externalApplication);
+                final host = Uri.tryParse(timestampedUrl)?.host ?? '';
+                NexusLogger.log('HANDOFF', 'User confirmed handoff playback on mobile (host: ${host.isEmpty ? 'unknown' : host})');
+                _safeLaunch(timestampedUrl);
               }
             },
           ),
         ),
       );
+    }, onError: (Object e) {
+      NexusLogger.log('UI', 'onMediaHandoffPrompt stream error: $e');
     });
 
     NexusLogger.log('UI', 'Dashboard initialized. Starting 500ms state polling.');
@@ -126,31 +147,115 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pollTimer?.cancel();
     _openUrlSub?.cancel();
     _mediaPromptSub?.cancel();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetchState();
+      _startPolling();
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    }
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(_pollInterval, (_) => _fetchState());
+  }
+
+  bool get _isRouteCurrent => ModalRoute.of(context)?.isCurrent ?? true;
+
+  static Map<String, dynamic>? _asMap(Object? value) =>
+      value is Map ? Map<String, dynamic>.from(value) : null;
+
+  /// Opens a remote URL only if it is a valid http/https link.
+  Future<bool> _safeLaunch(String rawUrl) async {
+    final uri = Uri.tryParse(rawUrl.trim());
+    final valid = uri != null && (uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty;
+    if (!valid) {
+      NexusLogger.log('UI', 'Rejected remote URL (invalid or unsupported scheme)');
+      _showLaunchError('Link non valido o non supportato');
+      return false;
+    }
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok) _showLaunchError('Impossibile aprire il link');
+      return ok;
+    } catch (e) {
+      NexusLogger.log('UI', 'launchUrl failed for host ${uri.host}: $e');
+      _showLaunchError('Impossibile aprire il link');
+      return false;
+    }
+  }
+
+  void _showLaunchError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   void _fetchState() {
-    final state = NexusFfiBridge.instance.getState();
-    if (mounted) {
+    final Map<String, dynamic> state;
+    try {
+      state = Map<String, dynamic>.from(NexusFfiBridge.instance.getState());
+      _stateErrorLogged = false;
+    } catch (e) {
+      if (!_stateErrorLogged) {
+        _stateErrorLogged = true;
+        NexusLogger.log('UI', 'Engine state unavailable: $e');
+      }
+      return;
+    }
+
+    String? stateJson;
+    try {
+      stateJson = jsonEncode(state);
+    } catch (_) {
+      stateJson = null;
+    }
+    final changed = stateJson == null || stateJson != _lastStateJson;
+    _lastStateJson = stateJson;
+    if (mounted && changed) {
       setState(() {
         _engineState = state;
       });
     }
 
-    final active = state['active_media'] as Map<String, dynamic>?;
-    final title = active != null ? active['media_title'] as String? : null;
+    final active = _asMap(state['active_media']);
+    final titleValue = active?['media_title'];
+    final title = titleValue is String ? titleValue : null;
     if (title != _lastLoggedMediaTitle) {
       _lastLoggedMediaTitle = title;
-      NexusLogger.log('UI_STATE', 'Active media state changed: $active');
+      NexusLogger.log('UI_STATE', 'Active media changed: ${title ?? 'none'}');
     }
   }
 
   void _showPairingDialog(BuildContext context) {
-    final localIp = _engineState['local_lan_ip'] as String? ?? '127.0.0.1';
-    final pairingPayload = 'nexus://pair?host=$localIp&port=28471&id=${LanSyncService.instance.deviceId}';
+    final ipValue = _engineState['local_lan_ip'];
+    final localIp = ipValue is String ? ipValue.trim() : '';
+    if (localIp.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('IP locale non disponibile: impossibile generare il codice di associazione')),
+      );
+      return;
+    }
+    final portValue = _engineState['lan_port'];
+    final port = portValue is num ? portValue.toInt() : _defaultLanPort;
+    final pairingPayload = Uri(
+      scheme: 'nexus',
+      host: 'pair',
+      queryParameters: {
+        'host': localIp,
+        'port': '$port',
+        'id': LanSyncService.instance.deviceId,
+      },
+    ).toString();
 
     showDialog(
       context: context,
@@ -193,7 +298,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(height: 12),
             Text(
-              'IP Locale: $localIp • Porta 28471',
+              'IP Locale: $localIp • Porta $port',
               style: const TextStyle(fontSize: 12, color: NexusTheme.textSecondary),
             ),
           ],
@@ -210,8 +315,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final activeMedia = _engineState['active_media'] as Map<String, dynamic>?;
-    final audioRelayActive = _engineState['audio_relay_active'] as bool? ?? false;
+    final activeMedia = _asMap(_engineState['active_media']);
+    final audioRelayActive = _engineState['audio_relay_active'] == true;
     final volume = (_engineState['audio_volume'] as num?)?.toDouble() ?? 0.80;
     final rawPeers = _engineState['discovered_peers'] as List? ?? [];
     final peers = rawPeers.map((p) => p is Map ? Map<String, dynamic>.from(p) : <String, dynamic>{}).where((p) => p.isNotEmpty).toList();
@@ -235,15 +340,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
         actions: [
           IconButton(
-            icon: Badge(
-              isLabelVisible: LanSyncService.instance.notifications.isNotEmpty,
-              label: Text('${LanSyncService.instance.notifications.length}'),
-              child: const Icon(Icons.notifications_outlined),
+            icon: ListenableBuilder(
+              listenable: LanSyncService.instance,
+              builder: (context, _) => Badge(
+                isLabelVisible: LanSyncService.instance.notifications.isNotEmpty,
+                label: Text('${LanSyncService.instance.notifications.length}'),
+                child: const Icon(Icons.notifications_outlined),
+              ),
             ),
             tooltip: 'Centro Notifiche',
             onPressed: () {
               if (widget.onNavigateTab != null) {
-                widget.onNavigateTab!(1);
+                widget.onNavigateTab!(DashboardScreen._tabNotifications);
               } else {
                 Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationCenterScreen()));
               }
@@ -298,21 +406,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     subtitle: 'Multi-touch & Tastiera',
                     icon: Icons.touch_app_rounded,
                     color: Colors.tealAccent,
-                    onTap: () => widget.onNavigateTab?.call(4),
+                    onTap: () => widget.onNavigateTab?.call(DashboardScreen._tabTouchpad),
                   ),
                   _buildQuickTile(
                     title: 'File Drop (P2P)',
                     subtitle: 'BLAKE3 • Chunk 64KB',
                     icon: Icons.folder_shared_rounded,
                     color: Colors.orangeAccent,
-                    onTap: () => widget.onNavigateTab?.call(3),
+                    onTap: () => widget.onNavigateTab?.call(DashboardScreen._tabFileTransfer),
                   ),
                   _buildQuickTile(
                     title: 'Appunti E2EE',
                     subtitle: LanSyncService.instance.clipboardPrivacyGate ? 'Zero-Trust Attivo' : 'Sincronizzazione Diretta',
                     icon: Icons.content_paste_rounded,
                     color: Colors.purpleAccent,
-                    onTap: () => widget.onNavigateTab?.call(5),
+                    onTap: () => widget.onNavigateTab?.call(DashboardScreen._tabClipboard),
                   ),
                   _buildQuickTile(
                     title: 'Schermi & Prossimità',
@@ -323,7 +431,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             : '${LanSyncService.instance.spatialPosition} • BLE Standby',
                     icon: Icons.devices_other_rounded,
                     color: Colors.blueAccent,
-                    onTap: () => widget.onNavigateTab?.call(2),
+                    onTap: () => widget.onNavigateTab?.call(DashboardScreen._tabTopology),
                   ),
                 ],
               );

@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../services/lan_sync_service.dart';
 import '../theme/nexus_theme.dart';
@@ -29,19 +29,46 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
   @override
   void initState() {
     super.initState();
-    _topologySub = LanSyncService.instance.onTopologyChanged.listen((_) {
-      if (mounted && !_isDragging) {
-        setState(() {
-          _selectedPosition = LanSyncService.instance.spatialPosition;
-        });
-      }
-    });
-    _timer = Timer.periodic(const Duration(milliseconds: 600), (_) {
-      if (mounted && !_isDragging) {
-        setState(() {
-          _selectedPosition = LanSyncService.instance.spatialPosition;
-        });
-      }
+    _topologySub = LanSyncService.instance.onTopologyChanged
+        .listen((_) => _syncFromService(force: true));
+    // Polling di riserva per distanza/movimento BLE: ricostruisce solo se qualcosa cambia.
+    _timer = Timer.periodic(const Duration(milliseconds: 600), (_) => _syncFromService());
+  }
+
+  Object? _lastDistance;
+  Object? _lastMotion;
+  Object? _lastBleAvailable;
+  Object? _lastTargetId;
+  int? _lastPeerCount;
+
+  /// Riallinea lo stato locale con il servizio; chiama setState solo se un valore e' cambiato.
+  void _syncFromService({bool force = false}) {
+    if (!mounted || _isDragging) return;
+    final lan = LanSyncService.instance;
+    final distance = lan.estimatedDistanceMeters;
+    final motion = lan.proximityMotion;
+    final ble = lan.isBleHardwareAvailable;
+    final targetId = lan.selectedTargetDeviceId;
+    final peerCount = lan.discoveredPeers.length;
+    final changed = force ||
+        _selectedPosition != lan.spatialPosition ||
+        _autoPauseMedia != lan.autoPauseMediaOnWalkAway ||
+        _wakeOnApproach != lan.wakeOnApproach ||
+        _lastDistance != distance ||
+        _lastMotion != motion ||
+        _lastBleAvailable != ble ||
+        _lastTargetId != targetId ||
+        _lastPeerCount != peerCount;
+    _lastDistance = distance;
+    _lastMotion = motion;
+    _lastBleAvailable = ble;
+    _lastTargetId = targetId;
+    _lastPeerCount = peerCount;
+    if (!changed) return;
+    setState(() {
+      _selectedPosition = lan.spatialPosition;
+      _autoPauseMedia = lan.autoPauseMediaOnWalkAway;
+      _wakeOnApproach = lan.wakeOnApproach;
     });
   }
 
@@ -52,33 +79,54 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
     super.dispose();
   }
 
+  /// Unico punto di risoluzione del peer target (usato da build e _updatePosition).
+  /// Esclude il dispositivo locale, 'self' e i peer senza id stringa.
+  Map<String, dynamic>? _resolveTargetPeer() {
+    final lan = LanSyncService.instance;
+    final selected = lan.selectedTargetPeer;
+    if (selected != null && selected['id'] is String) return selected;
+    final realPeers = lan.discoveredPeers
+        .where((p) => p['id'] is String && p['id'] != lan.deviceId && p['id'] != 'self')
+        .toList();
+    return realPeers.isNotEmpty ? realPeers.first : null;
+  }
+
   void _updatePosition(String pos) {
     final lan = LanSyncService.instance;
-    final peers = lan.discoveredPeers.where((p) => p['id'] != lan.deviceId).toList();
-    final targetPeerId = lan.selectedTargetDeviceId ?? (peers.isNotEmpty ? peers.first['id'] as String : 'self');
+    final targetPeerId = _resolveTargetPeer()?['id'] as String?;
 
-    setState(() {
-      _selectedPosition = pos;
-      lan.spatialPosition = pos;
-      lan.lastAutoDeterminedPosition = pos;
-      Offset targetOffset;
-      switch (pos.toLowerCase()) {
-        case 'right':
-          targetOffset = const Offset(120.0, 0.0);
-          break;
-        case 'above':
-          targetOffset = const Offset(0.0, -90.0);
-          break;
-        case 'below':
-          targetOffset = const Offset(0.0, 90.0);
-          break;
-        case 'left':
-        default:
-          targetOffset = const Offset(-120.0, 0.0);
-          break;
+    // Effetti collaterali sul servizio fuori da setState; setState solo per lo stato locale.
+    Offset? targetOffset;
+    switch (pos.toLowerCase()) {
+      case 'left':
+        targetOffset = const Offset(-120.0, 0.0);
+        break;
+      case 'right':
+        targetOffset = const Offset(120.0, 0.0);
+        break;
+      case 'above':
+        targetOffset = const Offset(0.0, -90.0);
+        break;
+      case 'below':
+        targetOffset = const Offset(0.0, 90.0);
+        break;
+      default:
+        targetOffset = null;
+    }
+    // Posizione sconosciuta: niente fallback silenzioso su 'left'.
+    if (targetOffset == null) {
+      debugPrint('SpatialTopology: posizione sconosciuta ignorata: $pos');
+      return;
+    }
+    lan.spatialPosition = pos;
+    lan.lastAutoDeterminedPosition = pos;
+    {
+      // Senza un peer reale si aggiorna solo la posizione locale, senza sync di rete.
+      if (targetPeerId != null) {
+        lan.updateDeviceOffset(targetPeerId, targetOffset, syncNetwork: true);
       }
-      lan.updateDeviceOffset(targetPeerId, targetOffset, syncNetwork: true);
-    });
+    }
+    setState(() => _selectedPosition = pos);
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -96,10 +144,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
     final distance = lan.estimatedDistanceMeters;
     final motion = lan.proximityMotion;
     final localName = lan.deviceName;
-    final realPeers = lan.discoveredPeers
-        .where((p) => p['id'] != lan.deviceId && p['id'] != 'self')
-        .toList();
-    final targetPeer = lan.selectedTargetPeer ?? (realPeers.isNotEmpty ? realPeers.first : null);
+    final targetPeer = _resolveTargetPeer();
     final targetName = targetPeer?['name'] as String?;
 
     Color motionColor;
@@ -122,10 +167,14 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
       motionColor = NexusTheme.errorRed;
       motionText = "In Allontanamento (Moving Away)";
       motionIcon = Icons.arrow_upward_rounded;
-    } else {
+    } else if (motion == "Stationary") {
       motionColor = NexusTheme.successGreen;
       motionText = "Stazionario alla Scrivania (Stationary)";
       motionIcon = Icons.sensors_rounded;
+    } else {
+      motionColor = NexusTheme.textTertiary;
+      motionText = "Movimento Sconosciuto";
+      motionIcon = Icons.help_outline_rounded;
     }
 
     return Scaffold(
@@ -166,9 +215,10 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                       await LanSyncService.instance.synchronizeTopology();
                       if (mounted) setState(() {});
                     } catch (e) {
+                      debugPrint('SpatialTopology: sincronizzazione topologia fallita: $e');
                       if (context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Sincronizzazione non riuscita: $e')));
+                          const SnackBar(content: Text('Sincronizzazione non riuscita. Riprova più tardi.')));
                       }
                     }
                   },
@@ -190,7 +240,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.devices_rounded, color: Color(0xFF818CF8), size: 24),
+                      const Icon(Icons.devices_rounded, color: NexusTheme.accentIndigoLight, size: 24),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
@@ -198,24 +248,12 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                           children: [
                             if (targetName != null) ...[
                               Text(
-                                _selectedPosition.toLowerCase() == 'right'
-                                    ? '🖥️ $localName ── 📱 $targetName (a Destra)'
-                                    : _selectedPosition.toLowerCase() == 'left'
-                                        ? '📱 $targetName (a Sinistra) ── 🖥️ $localName'
-                                        : _selectedPosition.toLowerCase() == 'above'
-                                            ? '📱 $targetName (in Alto) ── 🖥️ $localName'
-                                            : '🖥️ $localName ── 📱 $targetName (in Basso)',
+                                _positionTexts(localName, targetName).title,
                                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
                               ),
                               const SizedBox(height: 3),
                               Text(
-                                _selectedPosition.toLowerCase() == 'right'
-                                    ? 'Il puntatore del mouse salta su $targetName uscendo dal bordo DESTRO di $localName.'
-                                    : _selectedPosition.toLowerCase() == 'left'
-                                        ? 'Il puntatore del mouse salta su $targetName uscendo dal bordo SINISTRO di $localName.'
-                                        : _selectedPosition.toLowerCase() == 'above'
-                                            ? 'Il puntatore del mouse salta su $targetName uscendo dal bordo SUPERIORE di $localName.'
-                                            : 'Il puntatore del mouse salta su $targetName uscendo dal bordo INFERIORE di $localName.',
+                                _positionTexts(localName, targetName).description,
                                 style: const TextStyle(color: NexusTheme.textSecondary, fontSize: 11.5),
                               ),
                               const SizedBox(height: 4),
@@ -249,7 +287,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                         ),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.swap_horiz_rounded, color: Color(0xFF818CF8)),
+                        icon: const Icon(Icons.swap_horiz_rounded, color: NexusTheme.accentIndigoLight),
                         tooltip: 'Inverti Sinistra / Destra',
                         onPressed: () {
                           _updatePosition(_selectedPosition.toLowerCase() == 'right' ? 'Left' : 'Right');
@@ -280,7 +318,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                             style: TextStyle(color: NexusTheme.warningAmber, fontSize: 11, fontWeight: FontWeight.w600),
                           ),
                         ),
-                        if (Platform.isAndroid)
+                        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
                           TextButton(
                             onPressed: () => LanSyncService.instance.openBluetoothSettings(),
                             style: TextButton.styleFrom(
@@ -301,7 +339,8 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                   subtitle: const Text('Il segnale BLE non determina sinistra e destra. Disponi i dispositivi sul canvas e sincronizza la topologia.'),
                   value: isBleAvailable && lan.bleSpatialAutoDetect,
                   onChanged: isBleAvailable ? (value) {
-                    setState(() => lan.setBleSpatialAutoDetect(value));
+                    lan.setBleSpatialAutoDetect(value);
+                    setState(() {});
                   } : null,
                 ),
               ],
@@ -320,9 +359,7 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                   ? 'RADIO OFF'
                   : distance != null
                       ? '≈ ${distance.toStringAsFixed(1)} m'
-                      : LanSyncService.instance.isConnected
-                          ? 'SCANNING'
-                          : 'NO SIGNAL',
+                      : 'NO SIGNAL',
               style: !isBleAvailable
                   ? NexusPillStyle.neutral
                   : (distance != null && distance < 1.8)
@@ -348,11 +385,6 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(motionText, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: motionColor)),
-                      const SizedBox(height: 4),
-                      Text(
-                        lan.proximityStatus,
-                        style: const TextStyle(fontSize: 11.5, color: NexusTheme.textSecondary),
-                      ),
                     ],
                   ),
                 ),
@@ -380,10 +412,21 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                   subtitle: const Text('Pausa automaticamente il PC e mostra la notifica di ripresa su smartphone quando ti allontani',
                       style: TextStyle(fontSize: 11.5, color: NexusTheme.textSecondary)),
                   value: _autoPauseMedia,
-                  onChanged: (v) {
+                  onChanged: (v) async {
+                    final previous = _autoPauseMedia;
+                    final messenger = ScaffoldMessenger.of(context);
                     setState(() => _autoPauseMedia = v);
                     LanSyncService.instance.autoPauseMediaOnWalkAway = v;
-                    LanSyncService.instance.saveSettingBool('autoPauseMediaOnWalkAway', v);
+                    try {
+                      await LanSyncService.instance.saveSettingBool('autoPauseMediaOnWalkAway', v);
+                    } catch (_) {
+                      LanSyncService.instance.autoPauseMediaOnWalkAway = previous;
+                      if (!mounted) return;
+                      setState(() => _autoPauseMedia = previous);
+                      messenger.showSnackBar(
+                        const SnackBar(content: Text('Impossibile salvare l\'impostazione Auto-Pausa Media')),
+                      );
+                    }
                   },
                 ),
                 const Divider(),
@@ -393,10 +436,21 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
                   subtitle: const Text('Risveglia i monitor PC e pre-riscalda la connessione P2P quando ti avvicini',
                       style: TextStyle(fontSize: 11.5, color: NexusTheme.textSecondary)),
                   value: _wakeOnApproach,
-                  onChanged: (v) {
+                  onChanged: (v) async {
+                    final previous = _wakeOnApproach;
+                    final messenger = ScaffoldMessenger.of(context);
                     setState(() => _wakeOnApproach = v);
                     LanSyncService.instance.wakeOnApproach = v;
-                    LanSyncService.instance.saveSettingBool('wakeOnApproach', v);
+                    try {
+                      await LanSyncService.instance.saveSettingBool('wakeOnApproach', v);
+                    } catch (_) {
+                      LanSyncService.instance.wakeOnApproach = previous;
+                      if (!mounted) return;
+                      setState(() => _wakeOnApproach = previous);
+                      messenger.showSnackBar(
+                        const SnackBar(content: Text('Impossibile salvare l\'impostazione Smart Wake')),
+                      );
+                    }
                   },
                 ),
               ],
@@ -407,6 +461,38 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
     );
   }
 
+  /// Titolo e descrizione per la posizione corrente, con un'unica logica
+  /// di mappatura e un fallback neutro esplicito per valori sconosciuti.
+  ({String title, String description}) _positionTexts(String localName, String targetName) {
+    switch (_selectedPosition.toLowerCase()) {
+      case 'right':
+        return (
+          title: '🖥️ $localName ── 📱 $targetName (a Destra)',
+          description: 'Il puntatore del mouse salta su $targetName uscendo dal bordo DESTRO di $localName.',
+        );
+      case 'left':
+        return (
+          title: '📱 $targetName (a Sinistra) ── 🖥️ $localName',
+          description: 'Il puntatore del mouse salta su $targetName uscendo dal bordo SINISTRO di $localName.',
+        );
+      case 'above':
+        return (
+          title: '📱 $targetName (in Alto) ── 🖥️ $localName',
+          description: 'Il puntatore del mouse salta su $targetName uscendo dal bordo SUPERIORE di $localName.',
+        );
+      case 'below':
+        return (
+          title: '🖥️ $localName ── 📱 $targetName (in Basso)',
+          description: 'Il puntatore del mouse salta su $targetName uscendo dal bordo INFERIORE di $localName.',
+        );
+      default:
+        return (
+          title: '🖥️ $localName ── 📱 $targetName',
+          description: 'Posizione non riconosciuta: seleziona un quadrante per configurare il salto del puntatore.',
+        );
+    }
+  }
+
   Widget _buildPositionChip(String pos, String label) {
     final isSelected = _selectedPosition.toLowerCase() == pos.toLowerCase();
     return InkWell(
@@ -415,10 +501,10 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFF6366F1) : const Color(0xFF1E293B),
+          color: isSelected ? NexusTheme.accentIndigo : NexusTheme.surfaceCard,
           borderRadius: BorderRadius.circular(6),
           border: Border.all(
-            color: isSelected ? const Color(0xFF818CF8) : Colors.white24,
+            color: isSelected ? NexusTheme.accentIndigoLight : NexusTheme.borderCard,
             width: 1,
           ),
         ),
@@ -440,7 +526,8 @@ class _SpatialTopologyScreenState extends State<SpatialTopologyScreen> {
       points: lan.topologyPoints,
       localId: lan.deviceId,
       names: {lan.deviceId: lan.deviceName,
-        for (final peer in lan.discoveredPeers) peer['id'] as String: peer['name'] as String? ?? 'Dispositivo'},
+        for (final peer in lan.discoveredPeers)
+          if (peer['id'] is String) peer['id'] as String: peer['name'] as String? ?? 'Dispositivo'},
       onDragging: (active) => _isDragging = active,
       onMove: (id, point) {
         lan.moveTopologyDevice(id, point);

@@ -78,9 +78,68 @@ class NexusFfiBridge {
   NexusIsBluetoothEnabledDart? _nexusLockForProximity;
   NexusSetClipboardPrivacyGateDart? _nexusSetBleScanningEnabled;
   NexusGetStateJsonDart? _nexusGetBleStateJson;
+  bool _loadAttempted = false;
 
   NexusFfiBridge._() {
+    _ensureLoaded();
+  }
+
+  /// #98: single idempotent loader. A failed load is remembered, so later
+  /// calls do not retry DynamicLibrary.open every time.
+  bool _ensureLoaded() {
+    if (_nexusGetStateJson != null) return true;
+    if (_loadAttempted) return false;
+    _loadAttempted = true;
     _loadLibrary();
+    return _nexusGetStateJson != null;
+  }
+
+  /// #93/#95: converts a native string owned by Rust, frees it in every case
+  /// (only when non-null) and never throws.
+  String? _takeString(ffi.Pointer<Utf8> ptr, String context) {
+    if (ptr == ffi.nullptr) {
+      NexusLogger.log('FFI', '$context: native returned NULL');
+      return null;
+    }
+    try {
+      return ptr.toDartString();
+    } catch (e) {
+      NexusLogger.log('FFI', '$context: invalid native string: $e');
+      return null;
+    } finally {
+      final free = _nexusFreeString;
+      if (free != null) free(ptr);
+    }
+  }
+
+  /// #93/#95: like [_takeString], but also decodes JSON safely into a map.
+  Map<String, dynamic>? _takeJson(ffi.Pointer<Utf8> ptr, String context) {
+    final str = _takeString(ptr, context);
+    if (str == null) return null;
+    try {
+      final decoded = jsonDecode(str);
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      NexusLogger.log('FFI', '$context: unexpected JSON type ${decoded.runtimeType}');
+    } catch (e) {
+      NexusLogger.log('FFI', '$context: malformed native JSON: $e');
+    }
+    return null;
+  }
+
+  /// #94/#96: allocates native UTF-8 copies (null -> nullptr) and frees them
+  /// in finally, even if an allocation or the native call throws.
+  R _withNativeStrings<R>(List<String?> values, R Function(List<ffi.Pointer<Utf8>> ptrs) body) {
+    final ptrs = <ffi.Pointer<Utf8>>[];
+    try {
+      for (final v in values) {
+        ptrs.add(v == null ? ffi.nullptr : v.toNativeUtf8());
+      }
+      return body(ptrs);
+    } finally {
+      for (final p in ptrs) {
+        if (p != ffi.nullptr) malloc.free(p);
+      }
+    }
   }
 
   void _loadLibrary() {
@@ -174,10 +233,7 @@ class NexusFfiBridge {
   Map<String, dynamic> getBleObservations() {
     final get = _nexusGetBleStateJson;
     if (get == null || _deviceId == null) return {};
-    final ptr = get();
-    if (ptr == ffi.nullptr) return {};
-    try { return jsonDecode(ptr.toDartString()) as Map<String, dynamic>; }
-    finally { _nexusFreeString!(ptr); }
+    return _takeJson(get(), 'getBleObservations') ?? {};
   }
 
   /// True if the real Rust engine is loaded
@@ -189,7 +245,7 @@ class NexusFfiBridge {
   /// Initializes the Nexus Engine
   String init(String deviceName) {
     if (_nexusInit == null) {
-      _loadLibrary();
+      _ensureLoaded();
       if (_nexusInit == null) {
         NexusLogger.log('FFI', 'Native DLL not available on ${Platform.operatingSystem}. Starting LanSyncService.');
         _deviceId = LanSyncService.instance.deviceId;
@@ -198,13 +254,9 @@ class NexusFfiBridge {
       }
     }
 
-    final namePtr = deviceName.toNativeUtf8();
-    final resPtr = _nexusInit!(namePtr);
-    malloc.free(namePtr);
-
-    if (resPtr == ffi.nullptr) throw StateError("Nexus identity initialization failed");
-    final id = resPtr.toDartString();
-    _nexusFreeString!(resPtr);
+    final initFn = _nexusInit!;
+    final id = _takeString(_withNativeStrings([deviceName], (p) => initFn(p[0])), 'init');
+    if (id == null) throw StateError("Nexus identity initialization failed");
     _deviceId = id;
     setProximityLockEnabled(LanSyncService.instance.autoLockOnWalkAway);
     setBleScanningEnabled(LanSyncService.instance.isBleHardwareAvailable && LanSyncService.instance.bleSpatialAutoDetect);
@@ -214,7 +266,7 @@ class NexusFfiBridge {
   /// Gets the live state JSON snapshot directly from Rust Core or LAN Sync
   Map<String, dynamic> getState() {
     if (_nexusGetStateJson == null) {
-      _loadLibrary();
+      _ensureLoaded();
       if (_nexusGetStateJson == null) {
         final lan = LanSyncService.instance;
         return {
@@ -235,10 +287,7 @@ class NexusFfiBridge {
       }
     }
 
-    final resPtr = _nexusGetStateJson!();
-    final jsonStr = resPtr.toDartString();
-    _nexusFreeString!(resPtr);
-    final parsed = jsonDecode(jsonStr) as Map<String, dynamic>;
+    final parsed = _takeJson(_nexusGetStateJson!(), 'getState') ?? <String, dynamic>{};
     parsed["spatial_position"] = LanSyncService.instance.spatialPosition;
     parsed["device_type"] = LanSyncService.instance.deviceType;
     parsed["proximity_motion"] = LanSyncService.instance.proximityMotion;
@@ -271,10 +320,8 @@ class NexusFfiBridge {
   /// Starts Private Listening Audio Relay
   int startAudioRelay(String peerId) {
     if (_nexusStartAudioRelay == null) return -1;
-    final peerPtr = peerId.toNativeUtf8();
-    final res = _nexusStartAudioRelay!(peerPtr);
-    malloc.free(peerPtr);
-    return res;
+    final fn = _nexusStartAudioRelay!;
+    return _withNativeStrings([peerId], (p) => fn(p[0]));
   }
 
   /// Stops Private Listening Audio Relay
@@ -290,7 +337,8 @@ class NexusFfiBridge {
       lan.sendVolume(volume);
       return lan.targetSocket == null ? -1 : 0;
     }
-    if (_nexusSetMasterVolume == null) return 0;
+    // #97: -1 = native function unavailable (same convention as audio relay).
+    if (_nexusSetMasterVolume == null) return -1;
     return _nexusSetMasterVolume!(volume.clamp(0.0, 1.0));
   }
 
@@ -304,14 +352,45 @@ class NexusFfiBridge {
     LanSyncService.instance.togglePcSpeakersMute();
   }
 
-  /// Toggles Private Listening headphone mute
+  /// Toggles Private Listening headphone mute (delegates to the idempotent
+  /// setter so the native relay and LanSyncService cannot drift apart).
   int toggleAudioMute() {
-    final nextMute = !LanSyncService.instance.isAudioMuted;
-    LanSyncService.instance.sendAudioMute(nextMute);
-    if (_nexusToggleAudioMute != null) {
-      return _nexusToggleAudioMute!();
+    return setAudioMuted(!LanSyncService.instance.isAudioMuted) ? 1 : 0;
+  }
+
+  /// Imposta il muto del Private Listening locale in modo idempotente: riceve
+  /// lo stato desiderato invece di commutare. Il nativo espone solo il toggle,
+  /// quindi si commuta, si rilegge lo stato reale restituito (1 = muto,
+  /// 0 = attivo, <0 = errore) e, se non coincide con quello desiderato, si
+  /// commuta di nuovo. Riallinea LanSyncService.isAudioMuted allo stato reale
+  /// e lo ritorna, cosi' il widget puo' allinearsi a sua volta.
+  bool setAudioMuted(bool desired) {
+    final lan = LanSyncService.instance;
+    lan.sendAudioMute(desired);
+    var actual = desired;
+    final toggle = _nexusToggleAudioMute;
+    if (toggle != null) {
+      var res = toggle();
+      if (res >= 0 && (res != 0) != desired) {
+        res = toggle();
+      }
+      if (res >= 0) actual = res != 0;
     }
-    return nextMute ? 1 : 0;
+    lan.isAudioMuted = actual;
+    return actual;
+  }
+
+  /// API unica per Play/Pausa (Media 48), condivisa da media card e island:
+  /// con un peer target invia il comando solo al peer via LAN, altrimenti
+  /// passa da sendMediaControl (FFI locale o fallback LAN).
+  int sendPlayPause(bool play, {String? targetPeerId}) {
+    final cmd = play ? 'PLAY' : 'PAUSE';
+    if (targetPeerId != null) {
+      final lan = LanSyncService.instance;
+      lan.sendCommand(cmd, targetPeerId: targetPeerId);
+      return lan.socketForDevice(targetPeerId) == null ? -1 : 0;
+    }
+    return sendMediaControl(cmd);
   }
 
   /// Sends a remote control command (PLAY, PAUSE, SEEK, MUTE) to browser extensions or PC over LAN
@@ -324,9 +403,8 @@ class NexusFfiBridge {
     if (_nexusSendMediaControl == null) {
       return 0;
     }
-    final actionPtr = action.toNativeUtf8();
-    final res = _nexusSendMediaControl!(actionPtr, positionMs ?? -1);
-    malloc.free(actionPtr);
+    final fn = _nexusSendMediaControl!;
+    final res = _withNativeStrings([action], (p) => fn(p[0], positionMs ?? -1));
     NexusLogger.log('FFI', 'Sent remote control command: $action (pos: $positionMs) -> code: $res');
     return res;
   }
@@ -378,15 +456,11 @@ class NexusFfiBridge {
   /// Synchronizes clipboard text with Zero-Trust Privacy Gate
   int syncClipboard(String text, {String? targetPeerId}) {
     LanSyncService.instance.sendClipboardWithPrivacyGate(text);
+    // #97: without the native core the text is still delivered via the LAN
+    // fallback above, so 0 (success) is intentional here.
     if (_nexusSyncClipboard == null) return 0;
-    final textPtr = text.toNativeUtf8();
-    final targetPtr = targetPeerId != null ? targetPeerId.toNativeUtf8() : ffi.nullptr;
-    final res = _nexusSyncClipboard!(textPtr, targetPtr.cast());
-    malloc.free(textPtr);
-    if (targetPeerId != null) {
-      malloc.free(targetPtr);
-    }
-    return res;
+    final fn = _nexusSyncClipboard!;
+    return _withNativeStrings([text, targetPeerId], (p) => fn(p[0], p[1]));
   }
 
   /// Classifies clipboard content into safe vs secret/PII
@@ -394,19 +468,18 @@ class NexusFfiBridge {
     if (_nexusClassifyClipboard == null) {
       return {"is_secret": false, "label": "Testo"};
     }
-    final textPtr = text.toNativeUtf8();
-    final resPtr = _nexusClassifyClipboard!(textPtr);
-    malloc.free(textPtr);
-    final jsonStr = resPtr.toDartString();
-    _nexusFreeString!(resPtr);
-    final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+    final fn = _nexusClassifyClipboard!;
+    // Fail closed: an unreadable classification is treated as a secret.
+    final map = _takeJson(_withNativeStrings([text], (p) => fn(p[0])), 'classifyClipboard') ??
+        <String, dynamic>{"is_secret": true, "label": "Non classificato", "error": "Invalid native response"};
     map['secret_type'] = map['label'];
     return map;
   }
 
   /// Sets whether the Zero-Trust Clipboard Privacy Gate is enabled
   int setClipboardPrivacyGate(bool enabled) {
-    if (_nexusSetClipboardPrivacyGate == null) return 0;
+    // #97: -1 = native function unavailable (same convention as audio relay).
+    if (_nexusSetClipboardPrivacyGate == null) return -1;
     return _nexusSetClipboardPrivacyGate!(enabled ? 1 : 0);
   }
 
@@ -415,12 +488,9 @@ class NexusFfiBridge {
     if (_nexusRevealClipboardSecret == null) {
       return {"revealed": false, "error": "DLL not loaded"};
     }
-    final idPtr = entryId.toNativeUtf8();
-    final resPtr = _nexusRevealClipboardSecret!(idPtr);
-    malloc.free(idPtr);
-    final jsonStr = resPtr.toDartString();
-    _nexusFreeString!(resPtr);
-    return jsonDecode(jsonStr) as Map<String, dynamic>;
+    final fn = _nexusRevealClipboardSecret!;
+    return _takeJson(_withNativeStrings([entryId], (p) => fn(p[0])), 'revealClipboardSecret') ??
+        {"revealed": false, "error": "Invalid native response"};
   }
 
   /// Creates a P2P File Transfer Offer
@@ -432,24 +502,26 @@ class NexusFfiBridge {
       };
     }
 
-    final namePtr = fileName.toNativeUtf8();
     final effectivePeer = targetPeerId ?? LanSyncService.instance.selectedTargetDeviceId ?? "broadcast";
-    final peerPtr = effectivePeer.toNativeUtf8();
-    final resPtr = _nexusOfferFileTransfer!(namePtr, peerPtr, fileSizeBytes);
-    malloc.free(namePtr);
-    malloc.free(peerPtr);
-
-    final jsonStr = resPtr.toDartString();
-    _nexusFreeString!(resPtr);
-    return jsonDecode(jsonStr) as Map<String, dynamic>;
+    final fn = _nexusOfferFileTransfer!;
+    return _takeJson(_withNativeStrings([fileName, effectivePeer], (p) => fn(p[0], p[1], fileSizeBytes)), 'offerFileTransfer') ??
+        {"file_id": "file-err", "error": "Invalid native response"};
   }
 
   /// Checks if real OS Bluetooth radio is enabled/On
   bool isBluetoothEnabled() {
     if (_nexusIsBluetoothEnabled != null) {
       try {
-        return _nexusIsBluetoothEnabled!() == 1;
-      } catch (_) {}
+        final code = _nexusIsBluetoothEnabled!();
+        if (code == 1) return true;
+        if (code != 0) {
+          // #99: codes other than 0/1 are native errors, not "radio off".
+          NexusLogger.log('FFI', 'isBluetoothEnabled: native error code $code');
+        }
+        return false;
+      } catch (e) {
+        NexusLogger.log('FFI', 'isBluetoothEnabled failed: $e');
+      }
     }
     return false;
   }

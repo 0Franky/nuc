@@ -36,7 +36,9 @@ class NexusNotification {
     'id': id,
     'title': title,
     'body': currentBody,
-    'raw_body': rawBody,
+    // Never serialize the unmasked body of a notification that contains a
+    // secret: the JSON may be persisted or sent over the network.
+    if (!hasSecret) 'raw_body': rawBody,
     'app_name': appName,
     'sender_device': senderDevice,
     'sender_device_id': senderDeviceId,

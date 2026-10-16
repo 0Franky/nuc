@@ -106,3 +106,66 @@ ciecamente le autorizzazioni già concesse.
   tenuto richiede cleanup nativo per proprietario. Non applicare un rilascio globale
   che interferisca con altri peer; la correzione di cambio destinazione non copre
   questa interruzione di rete.
+
+
+## Follow-up 11 settembre: motore pronto ma bordo inattivo
+
+- Evidenza runtime Windows: il file TOML contiene un client sul bordo sinistro,
+  ma una richiesta IPC `Sync` al processo attivo restituisce `Enumerate: []` con
+  cattura e ricezione Enabled. Non basta verificare il file o i permessi.
+- Causa nella dipendenza LAN Mouse fissata alla revisione nota: notify Windows
+  emette `Modify(Any)` per `FILE_ACTION_MODIFIED`, mentre `Config.changed()`
+  accettava solo `Modify(Data(_))`. Il client aggiunto dopo l'avvio non entrava
+  quindi nel motore. Patch dedicata per le modifiche generiche Windows.
+- Emulazione upstream: rimosso il fallback automatico Dummy. Se nessun backend
+  operativo si avvia, lo stato deve restare non pronto; un backend di prova non
+  deve trasformare un errore del compositor in un successo.
+- Flutter: richieste di avvio/arresto, perdita IPC e aggiornamenti configurazione
+  serializzati. Le richieste durante un riavvio non vengono piu scartate; eventi
+  del vecchio processo/socket non possono aggiornare il nuovo stato. Cleanup
+  dello stato prima delle attese e attesa limitata dell'uscita del supervisore.
+- Regressione con binari reali: disable durante restart falliva (enabled true)
+  prima della correzione; passa dopo. Test anche di caricamento effettivo di un
+  client inattivo da file, senza inviare eventi di input.
+- Diagnostica: espone abilitazione/operazione in corso e destinazioni riportate
+  dall'IPC, con bordo, attivazione e raggiungibilita. Nessun destinatario non viene
+  piu presentato come condivisione pronta in uscita.
+- Il report Linux ricevuto (motore e readiness true, stato disattivato) evidenzia
+  un'incoerenza di lifecycle; non e stato riprodotto esattamente sul desktop
+  dell'utente. La regressione sulle richieste sovrapposte prova un difetto collegato,
+  non dimostra da sola che quella specifica sequenza abbia causato il report.
+- Il warning wlroots indica un tentativo non disponibile; libei/RemoteDesktop
+  possono seguire. Non identificare il backend vincente dal solo booleano ready.
+- La prova fisica Windows -> Wayland e il touchpad Android -> Wayland restano
+  necessari: suite isolate e readiness non provano da sole il movimento visibile.
+
+- Seconda review: una sincronizzazione IPC non cancella piu un errore precedente
+  senza prova di recupero; l'errore resta visibile fino al riavvio esplicito.
+- Test nativi della patch: `windows_modify_any_reloads_and_removes_clients`
+  falliva con timeout prima, passa dopo; emulazione senza backend reali falliva
+  restituendo Dummy prima, passa restituendo NoAvailableBackend dopo.
+- Builder: quattro test verificano upgrade clean/vecchia patch/serie completa,
+  idempotenza e conservazione/rifiuto di modifiche locali, staged e untracked.
+  Preparazione verificata sui checkout reali Windows e Linux.
+- Suite Flutter completa 85/85 passata; nessun test saltato. Analisi statica pulita.
+
+
+### Verifica live successiva: metadata cancellati dagli annunci
+
+Il test Windows con binario finale ha passato il reload reale e il lifecycle.
+Il primo tentativo era stato rifiutato per un motore gia attivo; dopo aver chiuso
+l'installazione corretta, il test a freddo e passato. Non nascondere questo preflight.
+
+Dopo il riavvio dell'app, il router annunciava il Linux prima con readiness true,
+poi con shared_input null. Questa volta anche il file TOML risultava senza client:
+non era piu un errore del watcher. In `nexus-plugin-media/src/actor.rs`, indicizzare
+un campo JSON assente produceva Null e il relay lo reinseriva esplicitamente
+nell'annuncio. Il ricevente interpretava correttamente quel null come spegnimento.
+Il router deve conservare la distinzione fra campo assente (nessun aggiornamento)
+e null esplicito (disattivazione), anche nella cache dei peer e nei metadata host.
+
+
+Regressione WebSocket reale del relay: rossa prima (campo assente trasformato in
+null), verde dopo. Copre annuncio, rinomina, cache di riconnessione, metadata host
+e null esplicito. La correzione richiede aggiornare la FFI/daemon oltre alla UI e
+al motore input: copiare soltanto lan-mouse non basta.

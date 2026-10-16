@@ -37,7 +37,15 @@ class ProximityMonitor {
     if (peer != peerId || !rssi.isFinite || rssi >= 0 || rssi < -127) {
       return false;
     }
-    if (_lastSample != null && now.isBefore(_lastSample!)) return false;
+    // A slightly older timestamp is an out-of-order sample: drop it. A jump
+    // back beyond the freshness window means the wall clock was moved back:
+    // restart the history (via the !isFresh branch below) instead of
+    // rejecting every sample until the clock catches up.
+    if (_lastSample != null &&
+        now.isBefore(_lastSample!) &&
+        _lastSample!.difference(now) <= freshness) {
+      return false;
+    }
     if (!isFresh(now)) {
       _samples.clear();
       filteredRssi = null;

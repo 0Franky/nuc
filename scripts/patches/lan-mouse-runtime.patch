@@ -1,0 +1,106 @@
+diff --git a/input-emulation/src/lib.rs b/input-emulation/src/lib.rs
+index f77c607..f3c5721 100644
+--- a/input-emulation/src/lib.rs
++++ b/input-emulation/src/lib.rs
+@@ -26,7 +26,7 @@ mod libei;
+ #[cfg(target_os = "macos")]
+ mod macos;
+ 
+-/// fallback input emulation (logs events)
++/// Explicit diagnostic emulation (never selected automatically)
+ mod dummy;
+ mod error;
+ 
+@@ -121,7 +121,6 @@ impl InputEmulation {
+             Backend::Windows,
+             #[cfg(target_os = "macos")]
+             Backend::MacOs,
+-            Backend::Dummy,
+         ] {
+             match Self::with_backend(backend).await {
+                 Ok(b) => {
+@@ -238,3 +237,16 @@ trait Emulation: Send {
+     async fn destroy(&mut self, handle: EmulationHandle);
+     async fn terminate(&mut self);
+ }
++
++#[cfg(all(test, not(any(wlroots, libei, rdp, x11, windows, target_os = "macos"))))]
++mod nexus_runtime_tests {
++    use super::*;
++    #[tokio::test]
++    async fn automatic_selection_without_backends_must_not_report_dummy_success() {
++        assert!(matches!(InputEmulation::new(None).await, Err(EmulationCreationError::NoAvailableBackend)));
++    }
++    #[tokio::test]
++    async fn explicit_dummy_remains_available_for_isolated_tests() {
++        assert!(InputEmulation::new(Some(Backend::Dummy)).await.is_ok());
++    }
++}
+diff --git a/src/config.rs b/src/config.rs
+index f876b6d..a0dd7b9 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -1,7 +1,6 @@
+ use crate::capture_test::TestCaptureArgs;
+ use crate::emulation_test::TestEmulationArgs;
+ use clap::{Parser, Subcommand, ValueEnum};
+-use notify::event::ModifyKind;
+ use notify::{EventKind, RecommendedWatcher, Watcher};
+ use serde::{Deserialize, Serialize};
+ use std::collections::HashMap;
+@@ -419,9 +418,9 @@ impl Config {
+             if event.paths.contains(&self.config_path)
+                 && matches!(
+                     event.kind,
+-                    EventKind::Create(_)
+-                        | EventKind::Modify(ModifyKind::Data(_))
+-                        | EventKind::Remove(_)
++                    // Windows reports FILE_ACTION_MODIFIED as Modify(Any);
++                    // atomic replacement can also report a rename modification.
++                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                 )
+                 && self.read_from_disk()?
+             {
+@@ -578,3 +577,42 @@ impl Config {
+         Ok(())
+     }
+ }
++
++#[cfg(test)]
++mod nexus_runtime_tests {
++    use super::*;
++    use notify::event::ModifyKind;
++
++    #[tokio::test]
++    async fn windows_modify_any_reloads_and_removes_clients() {
++        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
++        let dir = std::env::temp_dir().join(format!("nexus-config-test-{}-{unique}", std::process::id()));
++        fs::create_dir(&dir).unwrap();
++        struct Cleanup(PathBuf);
++        impl Drop for Cleanup {
++            fn drop(&mut self) { let _ = fs::remove_file(self.0.join("config.toml")); let _ = fs::remove_dir(&self.0); }
++        }
++        let _cleanup = Cleanup(dir.clone());
++        let path = dir.join("config.toml");
++        let (tx, rx) = tokio::sync::mpsc::channel(4);
++        let mut config = Config {
++            args: Args::parse_from(["lan-mouse"]),
++            cert_path: dir.join("identity.pem"),
++            config_path: path.clone(), config_dir: dir,
++            config_toml: Some(ConfigToml::default()),
++            watcher: RecommendedWatcher::new(|_| {}, notify::Config::default()).unwrap(),
++            watch_rx: rx,
++        };
++        fs::write(&path, "[[clients]]\nips = [\"192.0.2.1\"]\nposition = \"left\"\nactivate_on_startup = true\n").unwrap();
++        tx.send(Ok(notify::Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path.clone()))).await.unwrap();
++        tokio::time::timeout(std::time::Duration::from_millis(250), config.changed()).await
++            .expect("Windows FILE_ACTION_MODIFIED must reload the configured neighbor").unwrap();
++        assert_eq!(config.clients().len(), 1);
++        assert_eq!(config.clients()[0].pos, Position::Left);
++        fs::write(&path, "clients = []\n").unwrap();
++        tx.send(Ok(notify::Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path))).await.unwrap();
++        tokio::time::timeout(std::time::Duration::from_millis(250), config.changed()).await
++            .expect("Removing the neighbor must also reload").unwrap();
++        assert!(config.clients().is_empty());
++    }
++}

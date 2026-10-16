@@ -5,6 +5,7 @@ import '../services/lan_sync_service.dart';
 import '../services/logger_service.dart';
 import '../services/nexus_ffi_bridge.dart';
 import '../theme/nexus_theme.dart';
+import 'nexus_audio_card.dart' show kAudioRelayPort;
 import 'nexus_button.dart';
 
 /// Unified Continuity Island: SSOT component merging Media Playback,
@@ -30,24 +31,59 @@ class NexusContinuityIsland extends StatefulWidget {
 class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
   late double _volume;
   bool _isMuted = false;
+  // Punto 40: stato locale delle casse del PC (toggle remoto).
+  bool _pcSpeakersMuted = false;
+  // Evita che didUpdateWidget sovrascriva _volume durante il drag dello slider.
+  bool _isDraggingVolume = false;
 
   @override
   void initState() {
     super.initState();
-    _volume = widget.initialVolume;
+    _volume = widget.initialVolume.clamp(0.0, 1.0).toDouble();
     _isMuted = LanSyncService.instance.isAudioMuted;
+    LanSyncService.instance.addListener(_onLanChanged);
+  }
+
+  /// Ricostruisce l'isola quando cambiano target, pcIp o stato di muto nel
+  /// servizio (prima il build leggeva il singleton senza ascoltarlo).
+  void _onLanChanged() {
+    if (!mounted) return;
+    setState(() {
+      _isMuted = LanSyncService.instance.isAudioMuted;
+    });
+  }
+
+  /// Throttle dell'invio volume (Media 31): al massimo un invio ogni 80 ms
+  /// durante il drag, più un invio finale forzato su onChangeEnd.
+  DateTime _lastVolumeSent = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _sendVolume(double v, String? targetId, {bool force = false}) {
+    final now = DateTime.now();
+    if (!force && now.difference(_lastVolumeSent) < const Duration(milliseconds: 80)) {
+      return;
+    }
+    _lastVolumeSent = now;
+    LanSyncService.instance.sendVolume(v, targetPeerId: targetId);
+    NexusFfiBridge.instance.setAudioVolume(v);
+  }
+
+  @override
+  void dispose() {
+    LanSyncService.instance.removeListener(_onLanChanged);
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant NexusContinuityIsland oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.initialVolume != widget.initialVolume) {
-      _volume = widget.initialVolume;
+    if (oldWidget.initialVolume != widget.initialVolume && !_isDraggingVolume) {
+      _volume = widget.initialVolume.clamp(0.0, 1.0).toDouble();
     }
   }
 
   void _showWebPlayerDialog(BuildContext context, String ip) {
-    final playerUrl = 'http://$ip:28472/';
+    // Uri racchiude automaticamente gli indirizzi IPv6 tra [...].
+    final playerUrl = Uri(scheme: 'http', host: ip, port: kAudioRelayPort, path: '/').toString();
 
     showDialog(
       context: context,
@@ -84,7 +120,7 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: NexusTheme.iconOnSurface,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: QrImageView(
@@ -106,8 +142,21 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
         ),
         actions: [
           TextButton(
-            onPressed: () {
-              launchUrl(Uri.parse(playerUrl), mode: LaunchMode.externalApplication);
+            onPressed: () async {
+              bool ok = false;
+              try {
+                ok = await launchUrl(Uri.parse(playerUrl), mode: LaunchMode.externalApplication);
+              } catch (e) {
+                NexusLogger.log('UI_CONTROL', 'launchUrl web player fallito: $e');
+              }
+              if (!ok && ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(
+                    content: Text('Impossibile aprire il browser'),
+                    backgroundColor: NexusTheme.errorRed,
+                  ),
+                );
+              }
             },
             child: const Text('Apri nel Browser', style: TextStyle(color: NexusTheme.accentIndigo)),
           ),
@@ -120,29 +169,73 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
     );
   }
 
+  /// Imposta il muto con un solo percorso (stesso difetto di NexusAudioCard):
+  /// prima si aggiornava isAudioMuted, si inviava sendAudioMute(target) e poi
+  /// toggleAudioMute(), che rileggeva isAudioMuted gia' aggiornato e rimandava
+  /// in broadcast lo stato opposto. Usato sia dal pulsante sia dallo slider.
+  /// Ora usa il setter idempotente setAudioMuted (Media 29), che rilegge lo
+  /// stato reale del nativo; con alsoLocal (Media 30) peer e FFI locale
+  /// vengono aggiornati entrambi, senza escludersi a vicenda.
+  void _setMuted(bool desired, String? targetId, {bool alsoLocal = false}) {
+    var actual = desired;
+    if (targetId != null) {
+      LanSyncService.instance.sendAudioMute(desired, targetPeerId: targetId);
+    }
+    if (targetId == null || alsoLocal) {
+      actual = NexusFfiBridge.instance.setAudioMuted(desired);
+    }
+    LanSyncService.instance.isAudioMuted = actual;
+    if (!mounted) return;
+    setState(() {
+      _isMuted = actual;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final lan = LanSyncService.instance;
     final targetPeer = lan.selectedTargetPeer;
     final targetName = targetPeer?['name'] as String? ?? (lan.pcIp != null ? 'PC Windows' : 'Nessun Target');
-    final targetIp = targetPeer?['ip'] as String? ?? lan.pcIp ?? '127.0.0.1';
+    // Niente fallback silenzioso su 127.0.0.1 (puntava al dispositivo locale).
+    final String? targetIp = targetPeer?['ip'] as String? ?? lan.pcIp;
 
     final media = widget.activeMedia;
     final hasMedia = media != null;
-    final title = hasMedia ? (media['media_title'] as String? ?? 'Media Attivo') : 'Nessun Media in Riproduzione';
-    final sourceApp = hasMedia ? (media['source_app'] as String? ?? 'Sistema') : 'In Standby';
-    final isPlaying = hasMedia ? (media['is_playing'] as bool? ?? false) : false;
-    final posMs = hasMedia ? ((media['position_ms'] as num?)?.toInt() ?? 0) : 0;
-    final durMs = hasMedia ? ((media['duration_ms'] as num?)?.toInt() ?? 0) : 0;
+    // Parsing tollerante del payload: tipi inattesi non devono far crashare il build.
+    String? asStr(Object? v) => v == null ? null : (v is String ? v : v.toString());
+    bool? asBool(Object? v) {
+      if (v is bool) return v;
+      if (v is num) return v != 0;
+      if (v is String) {
+        final s = v.trim().toLowerCase();
+        if (s == 'true' || s == '1') return true;
+        if (s == 'false' || s == '0') return false;
+      }
+      return null;
+    }
+    int? asInt(Object? v) {
+      if (v is num) return v.round();
+      if (v is String) return num.tryParse(v.trim())?.round();
+      return null;
+    }
+    final title = hasMedia ? (asStr(media['media_title']) ?? 'Media Attivo') : 'Nessun Media in Riproduzione';
+    final sourceApp = hasMedia ? (asStr(media['source_app']) ?? 'Sistema') : 'In Standby';
+    final isPlaying = hasMedia ? (asBool(media['is_playing']) ?? false) : false;
+    final posMs = hasMedia ? (asInt(media['position_ms']) ?? 0) : 0;
+    final durMs = hasMedia ? (asInt(media['duration_ms']) ?? 0) : 0;
     final progressRatio = durMs > 0 ? (posMs / durMs).clamp(0.0, 1.0) : 0.0;
 
-    final posMin = (posMs ~/ 60000).toString().padLeft(2, '0');
-    final posSec = ((posMs % 60000) ~/ 1000).toString().padLeft(2, '0');
-    final durMin = (durMs ~/ 60000).toString().padLeft(2, '0');
-    final durSec = ((durMs % 60000) ~/ 1000).toString().padLeft(2, '0');
-    final timeFormatted = durMs > 0 ? '$posMin:$posSec / $durMin:$durSec' : '$posMin:$posSec';
+    // Formato h:mm:ss oltre l'ora (prima 2 ore diventavano 120:00).
+    String fmtTime(int ms) {
+      final h = ms ~/ 3600000;
+      final mm = ((ms % 3600000) ~/ 60000).toString().padLeft(2, '0');
+      final ss = ((ms % 60000) ~/ 1000).toString().padLeft(2, '0');
+      return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
+    }
 
-    final volPercent = (_volume * 100).toInt();
+    final timeFormatted = durMs > 0 ? '${fmtTime(posMs)} / ${fmtTime(durMs)}' : fmtTime(posMs);
+
+    final volPercent = (_volume * 100).round();
 
     return Container(
       decoration: BoxDecoration(
@@ -151,7 +244,7 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
         border: Border.all(color: NexusTheme.borderCard),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withAlpha(50),
+            color: NexusTheme.background.withAlpha(50),
             blurRadius: 16,
             offset: const Offset(0, 4),
           ),
@@ -173,7 +266,7 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
                 ),
                 child: Icon(
                   hasMedia ? Icons.music_note_rounded : Icons.radio_rounded,
-                  color: isPlaying ? NexusTheme.successGreen : const Color(0xFF818CF8),
+                  color: isPlaying ? NexusTheme.successGreen : NexusTheme.accentIndigoLight,
                   size: 20,
                 ),
               ),
@@ -217,7 +310,7 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
                   ),
                 ),
                 child: Text(
-                  isPlaying ? 'IN CORSO' : 'PAUSA',
+                  isPlaying ? 'IN CORSO' : (hasMedia ? 'PAUSA' : 'STANDBY'),
                   style: TextStyle(
                     fontSize: 9.5,
                     fontWeight: FontWeight.bold,
@@ -250,7 +343,7 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
                   style: const TextStyle(fontSize: 10, color: NexusTheme.textTertiary, fontFamily: 'monospace'),
                 ),
                 Text(
-                  '${(progressRatio * 100).toInt()}%',
+                  '${(progressRatio * 100).round()}%',
                   style: const TextStyle(fontSize: 10, color: NexusTheme.textTertiary, fontFamily: 'monospace'),
                 ),
               ],
@@ -272,8 +365,8 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
                 // Single Play / Pause Button (SSOT)
                 IconButton.filled(
                   style: IconButton.styleFrom(
-                    backgroundColor: isPlaying ? NexusTheme.accentIndigo : const Color(0xFFF59E0B),
-                    foregroundColor: isPlaying ? Colors.white : Colors.black,
+                    backgroundColor: isPlaying ? NexusTheme.accentIndigo : NexusTheme.warningAmber,
+                    foregroundColor: isPlaying ? NexusTheme.iconOnSurface : NexusTheme.background,
                     padding: const EdgeInsets.all(8),
                     minimumSize: const Size(38, 38),
                   ),
@@ -282,11 +375,14 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
                     size: 22,
                   ),
                   tooltip: isPlaying ? 'Metti in Pausa' : 'Riprendi Riproduzione',
-                  onPressed: () {
+                  // Senza media il pulsante e' disabilitato (niente PLAY a vuoto).
+                  onPressed: !hasMedia
+                      ? null
+                      : () {
                     final cmd = isPlaying ? 'PAUSE' : 'PLAY';
                     final targetId = targetPeer?['id'] as String?;
-                    NexusFfiBridge.instance.sendMediaControl(cmd);
-                    lan.sendCommand(cmd, targetPeerId: targetId);
+                    // API condivisa (Media 48): sceglie internamente LAN/FFI.
+                    NexusFfiBridge.instance.sendPlayPause(!isPlaying, targetPeerId: targetId);
                     widget.onStateChanged?.call();
                     NexusLogger.log('UI_CONTROL', 'SSOT media toggle: $cmd sent to $targetName');
                   },
@@ -303,15 +399,7 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
                     size: 20,
                   ),
                   tooltip: _isMuted ? 'Ripristina Volume' : 'Muto',
-                  onPressed: () {
-                    setState(() {
-                      _isMuted = !_isMuted;
-                      lan.isAudioMuted = _isMuted;
-                    });
-                    final targetId = targetPeer?['id'] as String?;
-                    lan.sendAudioMute(_isMuted, targetPeerId: targetId);
-                    NexusFfiBridge.instance.toggleAudioMute();
-                  },
+                  onPressed: () => _setMuted(!_isMuted, targetPeer?['id'] as String?),
                 ),
 
                 // Universal Volume Slider
@@ -326,18 +414,21 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
                       value: _volume,
                       min: 0.0,
                       max: 1.0,
+                      onChangeStart: (_) => _isDraggingVolume = true,
+                      onChangeEnd: (v) {
+                        _isDraggingVolume = false;
+                        _sendVolume(v, targetPeer?['id'] as String?, force: true);
+                      },
                       onChanged: (v) {
+                        final targetId = targetPeer?['id'] as String?;
+                        // Uscire dal muto via slider deve togliere il muto anche
+                        // al peer / relay nativo, non solo alla UI.
+                        if (_isMuted && v > 0) _setMuted(false, targetId, alsoLocal: true);
                         setState(() {
                           _volume = v;
-                          if (_isMuted && v > 0) {
-                            _isMuted = false;
-                            lan.isAudioMuted = false;
-                          }
                           lan.currentVolume = v;
                         });
-                        final targetId = targetPeer?['id'] as String?;
-                        lan.sendVolume(v, targetPeerId: targetId);
-                        NexusFfiBridge.instance.setAudioVolume(v);
+                        _sendVolume(v, targetId);
                       },
                     ),
                   ),
@@ -368,31 +459,65 @@ class _NexusContinuityIslandState extends State<NexusContinuityIsland> {
             children: [
               Expanded(
                 child: NexusButton(
-                  label: 'Ascolto Privato (28472)',
+                  label: 'Ascolto Privato ($kAudioRelayPort)',
                   icon: Icons.headphones_rounded,
                   style: NexusButtonStyle.secondary,
                   height: 36,
-                  onPressed: () => _showWebPlayerDialog(context, targetIp),
+                  onPressed: () {
+                    if (targetIp == null || targetIp.isEmpty) {
+                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('IP del dispositivo target sconosciuto: seleziona un dispositivo connesso'),
+                          backgroundColor: NexusTheme.errorRed,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                      return;
+                    }
+                    _showWebPlayerDialog(context, targetIp);
+                  },
                 ),
               ),
               const SizedBox(width: 8),
               NexusButton(
-                label: 'Muto Casse',
-                icon: Icons.speaker_notes_off_rounded,
+                label: _pcSpeakersMuted ? 'Riattiva Casse' : 'Muto Casse',
+                icon: _pcSpeakersMuted ? Icons.volume_up_rounded : Icons.speaker_notes_off_rounded,
                 style: NexusButtonStyle.ghost,
                 height: 36,
-                onPressed: () {
-                  final targetId = targetPeer?['id'] as String?;
-                  lan.togglePcSpeakersMute(targetPeerId: targetId);
-                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('🔇 Muto altoparlanti inviato a $targetName!'),
-                      backgroundColor: NexusTheme.accentIndigo,
-                      duration: const Duration(seconds: 2),
-                    ),
-                  );
-                },
+                // Punto 40: senza peer target il comando e' disabilitato;
+                // si attende l'esito, si aggiorna lo stato e si mostrano gli errori.
+                onPressed: (targetPeer?['id'] as String?) == null
+                    ? null
+                    : () async {
+                        final targetId = targetPeer?['id'] as String?;
+                        final messenger = ScaffoldMessenger.of(context);
+                        try {
+                          await lan.togglePcSpeakersMute(targetPeerId: targetId);
+                        } catch (e) {
+                          if (!mounted) return;
+                          messenger.hideCurrentSnackBar();
+                          messenger.showSnackBar(
+                            SnackBar(
+                              content: Text('Invio del comando alle casse di $targetName non riuscito: $e'),
+                              backgroundColor: NexusTheme.errorRed,
+                            ),
+                          );
+                          return;
+                        }
+                        if (!mounted) return;
+                        setState(() => _pcSpeakersMuted = !_pcSpeakersMuted);
+                        messenger.hideCurrentSnackBar();
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text(_pcSpeakersMuted
+                                ? '🔇 Casse di $targetName messe in muto'
+                                : '🔊 Casse di $targetName riattivate'),
+                            backgroundColor: NexusTheme.accentIndigo,
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
               ),
             ],
           ),

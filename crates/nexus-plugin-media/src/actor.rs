@@ -343,15 +343,20 @@ impl NexusActor for MediaPluginActor {
                                                 if peer_id == actor.device_id {
                                                     if addr.ip().is_loopback() && !peer_name.trim().is_empty() {
                                                         *actor.device_name.write().await = peer_name.clone();
-                                                        *actor.shared_input_metadata.write().await = json_val["shared_input"].clone();
+                                                        if let Some(shared_input) = json_val.get("shared_input") {
+                                                            *actor.shared_input_metadata.write().await = shared_input.clone();
+                                                        }
                                                         if let Err(error) = nexus_crypto::DeviceIdentity::save_device_name(&peer_name) {
                                                             tracing::warn!("Cannot persist device name: {error}");
                                                         }
-                                                        let metadata = serde_json::json!({
+                                                        let mut metadata = serde_json::json!({
                                                             "type": "PEER_METADATA", "id": actor.device_id.to_string(),
                                                             "name": peer_name, "device_type": "Desktop", "os": std::env::consts::OS,
-                                                            "shared_input": actor.shared_input_metadata.read().await.clone(),
-                                                        }).to_string();
+                                                        });
+                                                        if let Some(shared_input) = json_val.get("shared_input") {
+                                                            metadata["shared_input"] = shared_input.clone();
+                                                        }
+                                                        let metadata = metadata.to_string();
                                                         actor.connected_clients.write().await.retain(|c| c.send(metadata.clone()).is_ok());
                                                     }
                                                     continue;
@@ -395,7 +400,7 @@ impl NexusActor for MediaPluginActor {
                                                 ));
 
                                                 // Broadcast peer discovery to all other connected clients (like nexus_ui desktop app)
-                                                let announce_msg = serde_json::json!({
+                                                let mut announce_msg = serde_json::json!({
                                                     "type": "PEER_ANNOUNCE",
                                                     "name": peer_name,
                                                     "id": peer_id.to_string(),
@@ -404,9 +409,24 @@ impl NexusActor for MediaPluginActor {
                                                     "os": peer_os_str,
                                                     "spatial_position": peer_pos_str,
                                                     "ip": addr.ip().to_string(),
-                                                    "shared_input": json_val["shared_input"],
                                                 });
-                                                actor.peers.write().await.insert(peer_id.to_string(), (announce_msg.clone(), tx.clone()));
+                                                // Absence means no update; explicit null revokes readiness.
+                                                // Relay the original presence semantics and merge only the
+                                                // reconnect snapshot with previously announced metadata.
+                                                if let Some(shared_input) = json_val.get("shared_input") {
+                                                    announce_msg["shared_input"] = shared_input.clone();
+                                                }
+                                                {
+                                                    let mut peers = actor.peers.write().await;
+                                                    let id = peer_id.to_string();
+                                                    let mut snapshot = announce_msg.clone();
+                                                    if json_val.get("shared_input").is_none() {
+                                                        if let Some(previous) = peers.get(&id).and_then(|(value, _)| value.get("shared_input")) {
+                                                            snapshot["shared_input"] = previous.clone();
+                                                        }
+                                                    }
+                                                    peers.insert(id, (snapshot, tx.clone()));
+                                                }
                                                 if let Ok(announce_str) =
                                                     serde_json::to_string(&announce_msg)
                                                 {

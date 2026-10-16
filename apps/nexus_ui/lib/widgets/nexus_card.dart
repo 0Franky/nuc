@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../theme/nexus_theme.dart';
 
 class NexusCard extends StatelessWidget {
@@ -33,21 +34,29 @@ class NexusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasHeader = title != null || icon != null || trailing != null;
+    // Con borderRadius Flutter richiede un Border uniforme, altrimenti il
+    // paint lancia un'eccezione.
+    assert(
+      border == null || border!.isUniform,
+      'NexusCard: border deve essere uniforme (usato con borderRadius).',
+    );
+    final hasHeader =
+        title != null || subtitle != null || icon != null || trailing != null;
 
-    Widget cardBody = Container(
-      padding: padding,
-      decoration: NexusTheme.cardDecoration(
-        color: backgroundColor,
-        border: border,
-        radius: borderRadius,
-      ),
-      child: Material(
-        type: MaterialType.transparency,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
+    final decoration = NexusTheme.cardDecoration(
+      color: backgroundColor,
+      border: border,
+      radius: borderRadius,
+    );
+
+    // Superficie trasparente per l'ink degli InkWell figli: nella variante
+    // non tappabile e' l'unico Material sopra la decorazione del Container.
+    final Widget content = Material(
+      type: MaterialType.transparency,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
           if (hasHeader) ...[
             Row(
               children: [
@@ -56,7 +65,9 @@ class NexusCard extends StatelessWidget {
                     width: 34,
                     height: 34,
                     decoration: BoxDecoration(
-                      color: iconBackgroundColor ?? (iconColor ?? NexusTheme.accentIndigo).withAlpha(35),
+                      color:
+                          iconBackgroundColor ??
+                          (iconColor ?? NexusTheme.accentIndigo).withAlpha(35),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Icon(
@@ -75,6 +86,8 @@ class NexusCard extends StatelessWidget {
                       if (title != null)
                         Text(
                           title!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: NexusTheme.textPrimary,
                             fontWeight: FontWeight.w700,
@@ -86,6 +99,8 @@ class NexusCard extends StatelessWidget {
                         const SizedBox(height: 2),
                         Text(
                           subtitle!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: NexusTheme.textSecondary,
                             fontSize: 12,
@@ -104,24 +119,29 @@ class NexusCard extends StatelessWidget {
           ?child,
         ],
       ),
-      ),
     );
 
     if (onTap != null) {
       return Material(
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(borderRadius),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(borderRadius),
-          hoverColor: NexusTheme.surfaceCardHover,
-          splashColor: NexusTheme.accentIndigo.withAlpha(40),
-          child: cardBody,
+        // Nessun clip: taglierebbe la boxShadow di cardDecoration. Ripple e
+        // hover sono gia' limitati dal borderRadius dell'InkWell.
+        // Ink dipinge la decorazione sul Material, cosi' ripple e hover
+        // dell'InkWell restano visibili sopra lo sfondo della card.
+        child: Ink(
+          decoration: decoration,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(borderRadius),
+            hoverColor: NexusTheme.surfaceCardHover,
+            splashColor: NexusTheme.accentIndigo.withAlpha(40),
+            child: Padding(padding: padding, child: content),
+          ),
         ),
       );
     }
 
-    return cardBody;
+    return Container(padding: padding, decoration: decoration, child: content);
   }
 }

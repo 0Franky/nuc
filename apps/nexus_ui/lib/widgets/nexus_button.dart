@@ -13,6 +13,9 @@ class NexusButton extends StatelessWidget {
   final VoidCallback? onPressed;
   final IconData? icon;
   final NexusButtonStyle style;
+  /// Se true il pulsante occupa tutta la larghezza disponibile: richiede un
+  /// genitore con vincoli di larghezza finiti (per esempio non una [Row]
+  /// senza [Expanded]).
   final bool isExpanded;
   final bool isLoading;
   final double height;
@@ -46,7 +49,7 @@ class NexusButton extends StatelessWidget {
         break;
       case NexusButtonStyle.ghost:
         bg = Colors.transparent;
-        fg = const Color(0xFF818CF8);
+        fg = NexusTheme.accentIndigoLight;
         borderSide = BorderSide(color: NexusTheme.accentIndigo.withAlpha(80), width: 1);
         break;
       case NexusButtonStyle.destructive:
@@ -56,43 +59,76 @@ class NexusButton extends StatelessWidget {
         break;
     }
 
-    Widget content = isLoading
-        ? const SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-          )
-        : Row(
+    // Disabilitato (non in loading): colori attenuati ma coerenti con lo stile.
+    // In loading si mantengono i colori pieni per evitare il salto visivo.
+    final bool isDisabled = onPressed == null && !isLoading;
+    final Color effectiveFg = isDisabled ? fg.withAlpha(110) : fg;
+    final Color effectiveBg = isDisabled && bg.a > 0 ? bg.withAlpha((bg.a * 255 * 0.5).round()) : bg;
+
+    final Widget row = Row(
             mainAxisSize: isExpanded ? MainAxisSize.max : MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               if (icon != null) ...[
-                Icon(icon, size: 17, color: fg),
+                Icon(icon, size: 17, color: effectiveFg),
                 const SizedBox(width: 8),
               ],
-              Text(
-                label,
-                style: TextStyle(
-                  color: fg,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
-                  letterSpacing: -0.1,
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: effectiveFg,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    letterSpacing: -0.1,
+                  ),
                 ),
               ),
             ],
           );
 
+    // In loading il Row resta invisibile ma mantiene dimensioni e semantica
+    // (la label resta annunciata), lo spinner viene sovrapposto al centro.
+    final Widget content = isLoading
+        ? Stack(
+            alignment: Alignment.center,
+            children: [
+              Visibility(
+                visible: false,
+                maintainSize: true,
+                maintainAnimation: true,
+                maintainState: true,
+                maintainSemantics: true,
+                child: row,
+              ),
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: fg,
+                  semanticsLabel: 'Caricamento in corso',
+                ),
+              ),
+            ],
+          )
+        : row;
+
     final buttonWidget = ElevatedButton(
       style: ElevatedButton.styleFrom(
         backgroundColor: bg,
         foregroundColor: fg,
+        disabledBackgroundColor: effectiveBg,
+        disabledForegroundColor: effectiveFg,
         elevation: 0,
         padding: const EdgeInsets.symmetric(horizontal: 16),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(NexusTheme.radiusButton),
           side: borderSide,
         ),
-        minimumSize: Size(isExpanded ? double.infinity : 0, height),
+        minimumSize: Size(0, height),
       ),
       onPressed: isLoading ? null : onPressed,
       child: content,

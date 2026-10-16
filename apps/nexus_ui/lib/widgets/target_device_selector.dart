@@ -2,11 +2,59 @@ import 'package:flutter/material.dart';
 import '../services/lan_sync_service.dart';
 import '../theme/nexus_theme.dart';
 
+/// fix D #105: scroll orizzontale con Scrollbar visibile e controller proprio
+/// (necessario su desktop, dove non c'è PrimaryScrollController orizzontale).
+class _ScrollableRow extends StatefulWidget {
+  const _ScrollableRow({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_ScrollableRow> createState() => _ScrollableRowState();
+}
+
+class _ScrollableRowState extends State<_ScrollableRow> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scrollbar(
+      key: const ValueKey('d105-selector-scrollbar'),
+      controller: _controller,
+      thumbVisibility: true,
+      child: SingleChildScrollView(
+        controller: _controller,
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.only(bottom: 8),
+        child: widget.child,
+      ),
+    );
+  }
+}
+
 /// Reusable widget for switching the active target device on-the-fly.
 /// Displays connected online peers with their unique device colors.
 class TargetDeviceSelector extends StatelessWidget {
+  /// Id evidenziato. Se non nullo ha la precedenza su
+  /// [LanSyncService.currentTargetId]: il genitore deve aggiornarlo in
+  /// [onDeviceSelected], altrimenti dopo il tap l'evidenziazione resta
+  /// sul vecchio dispositivo. Lasciarlo null per seguire il servizio.
   final String? selectedDeviceId;
+
+  /// Chiamato dopo il tap su un peer online.
   final ValueChanged<String>? onDeviceSelected;
+
+  /// Se true (default) il tap aggiorna anche il target globale con
+  /// [LanSyncService.selectTargetDevice]. Impostarlo a false per una
+  /// selezione solo locale, gestita tramite [selectedDeviceId] e
+  /// [onDeviceSelected].
+  final bool updateGlobalTarget;
   final String? filterType; // e.g. 'Desktop' to only show controllable PCs
   final bool compact;
   final String title;
@@ -16,6 +64,7 @@ class TargetDeviceSelector extends StatelessWidget {
     this.selectedDeviceId,
     this.onDeviceSelected,
     this.filterType,
+    this.updateGlobalTarget = true,
     this.compact = false,
     this.title = "Dispositivo Destinazione",
   });
@@ -42,7 +91,23 @@ class TargetDeviceSelector extends StatelessWidget {
           return true;
         }).toList();
 
-        final currentTargetId = selectedDeviceId ?? lan.selectedTargetDeviceId ?? (peers.isNotEmpty ? peers.first['id'] as String : '');
+        // Evidenzia solo il target realmente selezionato: un fallback solo
+        // visivo sul primo peer faceva credere all'utente di aver scelto un
+        // dispositivo che il servizio non conosce (selectTargetDevice mai chiamato).
+        final currentTargetId = selectedDeviceId ?? lan.selectedTargetDeviceId ?? '';
+
+        // fix D #97: se il target corrente è escluso dal filtro l'utente non
+        // vedeva nessuna selezione; lo segnaliamo esplicitamente.
+        String? hiddenTargetName;
+        if (currentTargetId.isNotEmpty &&
+            !peers.any((p) => p['id'] == currentTargetId)) {
+          for (final p in allPeers) {
+            if (p['id'] == currentTargetId) {
+              hiddenTargetName = p['name'] as String? ?? 'Dispositivo';
+              break;
+            }
+          }
+        }
 
         return Container(
           padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: compact ? 6 : 8),
@@ -60,16 +125,19 @@ class TargetDeviceSelector extends StatelessWidget {
                   children: [
                     const Icon(Icons.swap_horiz, size: 14, color: NexusTheme.textSecondary),
                     const SizedBox(width: 6),
-                    Text(
-                      title.toUpperCase(),
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.8,
-                        color: NexusTheme.textSecondary,
+                    Expanded(
+                      child: Text(
+                        title.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.8,
+                          color: NexusTheme.textSecondary,
+                        ),
                       ),
                     ),
-                    const Spacer(),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
@@ -77,17 +145,28 @@ class TargetDeviceSelector extends StatelessWidget {
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
-                        "${peers.length} ${peers.length == 1 ? 'nodo' : 'nodi'}",
+                        "${peers.where((p) => p['online'] != false).length}/${peers.length} online",
                         style: const TextStyle(
                           fontSize: 9,
                           fontWeight: FontWeight.w600,
-                          color: Color(0xFF818CF8),
+                          color: NexusTheme.accentIndigoLight,
                         ),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 8),
+              ],
+              if (hiddenTargetName != null) ...[
+                Text(
+                  'Destinazione attuale "$hiddenTargetName" non compatibile con questo filtro: selezionane una qui sotto.',
+                  key: const ValueKey('d97-hidden-target'),
+                  style: TextStyle(
+                    fontSize: compact ? 11 : 12,
+                    color: NexusTheme.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 6),
               ],
               if (peers.isEmpty)
                 Row(
@@ -111,8 +190,7 @@ class TargetDeviceSelector extends StatelessWidget {
                   ],
                 )
               else
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
+                _ScrollableRow(
                   child: Row(
                     children: peers.map((peer) {
                 final id = peer['id'] as String? ?? '';
@@ -120,18 +198,17 @@ class TargetDeviceSelector extends StatelessWidget {
                 final name = peer['name'] as String? ?? 'Dispositivo';
                 final isSelected = id == currentTargetId;
                 final devColor = NexusDeviceColors.colorForDevice(id);
-                final isDesktop = (peer['device_type'] as String?) == 'Desktop' ||
-                    (peer['os'] as String?)?.toLowerCase() == 'windows' ||
-                    name.toLowerCase().contains('pc');
+                final isDesktop = LanSyncService.isDesktopPeer(peer);
 
                 return Padding(
+                  key: ValueKey(id),
                   padding: const EdgeInsets.only(right: 8),
                   child: Material(
                     color: Colors.transparent,
                     child: InkWell(
                       borderRadius: BorderRadius.circular(10),
                       onTap: !online ? null : () {
-                        lan.selectTargetDevice(id);
+                        if (updateGlobalTarget) lan.selectTargetDevice(id);
                         onDeviceSelected?.call(id);
                       },
                       child: AnimatedContainer(
@@ -185,12 +262,17 @@ class TargetDeviceSelector extends StatelessWidget {
                               color: isSelected ? devColor : NexusTheme.textSecondary,
                             ),
                             const SizedBox(width: 6),
-                            Text(
-                              online ? name : '$name · offline',
-                              style: TextStyle(
-                                fontSize: compact ? 12 : 13,
-                                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                                color: isSelected ? Colors.white : NexusTheme.textPrimary,
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 180),
+                              child: Text(
+                                online ? name : '$name · offline',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: compact ? 12 : 13,
+                                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                                  color: isSelected ? Colors.white : NexusTheme.textPrimary,
+                                ),
                               ),
                             ),
                             if (isSelected) ...[

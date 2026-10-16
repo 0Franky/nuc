@@ -11,11 +11,18 @@ enum NexusPillStyle {
 
 class NexusPill extends StatelessWidget {
   final String label;
+
+  /// Icona opzionale. Ignorata se è presente [leading]: non passarle entrambe.
   final IconData? icon;
+
+  /// Widget iniziale personalizzato. Ha la precedenza su [icon].
   final Widget? leading;
   final NexusPillStyle style;
   final VoidCallback? onTap;
   final bool showDot;
+
+  /// Area di tocco minima (px) della variante cliccabile.
+  static const double minTapTarget = 48.0;
 
   const NexusPill({
     super.key,
@@ -25,7 +32,8 @@ class NexusPill extends StatelessWidget {
     this.style = NexusPillStyle.neutral,
     this.onTap,
     this.showDot = false,
-  });
+  }) : assert(leading == null || icon == null,
+            'NexusPill: passare leading oppure icon, non entrambi');
 
   @override
   Widget build(BuildContext context) {
@@ -42,7 +50,7 @@ class NexusPill extends StatelessWidget {
       case NexusPillStyle.accent:
         bg = NexusTheme.accentIndigoMuted;
         border = NexusTheme.accentIndigo.withAlpha(80);
-        fg = const Color(0xFF818CF8);
+        fg = NexusTheme.accentIndigoLight;
         break;
       case NexusPillStyle.warning:
         bg = NexusTheme.warningAmberMuted;
@@ -83,32 +91,80 @@ class NexusPill extends StatelessWidget {
           Icon(icon, size: 13, color: fg),
           const SizedBox(width: 5),
         ],
-        Text(
-          label,
-          style: TextStyle(
-            color: fg,
-            fontSize: 11.5,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.1,
+        Flexible(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: fg,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.1,
+            ),
           ),
         ),
       ],
     );
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(NexusTheme.radiusPill),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(NexusTheme.radiusPill),
-            border: Border.all(color: border, width: 1),
+    final decoration = BoxDecoration(
+      color: bg,
+      borderRadius: BorderRadius.circular(NexusTheme.radiusPill),
+      border: Border.all(color: border, width: 1),
+    );
+    const padding = EdgeInsets.symmetric(horizontal: 10, vertical: 4.5);
+
+    // Pill statica: nessun InkWell montato.
+    if (onTap == null) {
+      return Container(
+        padding: padding,
+        decoration: decoration,
+        child: content,
+      );
+    }
+
+    // Pill cliccabile: lo sfondo sta in un Ink, così ripple e hover restano
+    // visibili sopra la decorazione. L'area di tocco è estesa a minimo
+    // [minTapTarget] px con un GestureDetector trasparente attorno alla pill,
+    // senza cambiare la dimensione visiva; focus e cursore sono espliciti.
+    // MergeSemantics unisce il flag button, l'etichetta e l'azione tap
+    // dell'InkWell interno in un solo nodo accessibile.
+    return MergeSemantics(
+      child: Semantics(
+      button: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(
+              minWidth: minTapTarget,
+              minHeight: minTapTarget,
+            ),
+            child: Center(
+              widthFactor: 1.0,
+              heightFactor: 1.0,
+              child: Material(
+                color: Colors.transparent,
+                child: Ink(
+                  decoration: decoration,
+                  child: InkWell(
+                    onTap: onTap,
+                    canRequestFocus: true,
+                    mouseCursor: SystemMouseCursors.click,
+                    focusColor: fg.withAlpha(40),
+                    hoverColor: fg.withAlpha(20),
+                    borderRadius:
+                        BorderRadius.circular(NexusTheme.radiusPill),
+                    child: Padding(padding: padding, child: content),
+                  ),
+                ),
+              ),
+            ),
           ),
-          child: content,
         ),
+      ),
       ),
     );
   }
